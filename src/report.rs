@@ -151,6 +151,31 @@ pub fn text(rep: &JsonReport) -> String {
     s
 }
 
+/// A small DOT of only the *small* deadlock cycles (the actionable AB-BA ones).
+/// Large strongly-connected "lock tangles" are excluded: they are near-dense, so
+/// Graphviz layout on them is pathologically slow and the picture is unreadable
+/// anyway. This is the part worth viewing.
+pub fn dot_cycles(g: &LockGraph) -> String {
+    const TANGLE: usize = 12;
+    let mut in_cycle: HashSet<usize> = HashSet::new();
+    for comp in g.deadlock_sccs() {
+        if comp.len() <= TANGLE && g.common_guard(&comp).is_empty() {
+            in_cycle.extend(comp);
+        }
+    }
+    let mut s = String::from("digraph cycles {\n  rankdir=LR; node [shape=box,fontsize=9,style=filled,fillcolor=\"#ffe0e0\"];\n");
+    for &i in &in_cycle {
+        let _ = writeln!(s, "  \"{}\";", g.nodes[i].name());
+    }
+    for (a, b, ev) in g.sorted_evidence() {
+        if in_cycle.contains(&a) && in_cycle.contains(&b) && ev.iter().any(|e| !e.nonblocking) {
+            let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"{}\"];", g.nodes[a].name(), g.nodes[b].name(), ev.len());
+        }
+    }
+    s.push_str("}\n");
+    s
+}
+
 pub fn dot(g: &LockGraph) -> String {
     let mut in_cycle: HashSet<usize> = HashSet::new();
     for comp in g.deadlock_sccs() {

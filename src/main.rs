@@ -125,19 +125,31 @@ fn write_artifacts(
     std::fs::create_dir_all(dir).with_context(|| format!("mkdir {}", dir.display()))?;
     let p = |name: &str| dir.join(name);
 
+    eprintln!("[lockdex] writing report.txt + lockgraph.json ...");
     std::fs::write(p("report.txt"), report::text(rep))?;
     std::fs::write(p("deadlock_cycles.txt"), report::text(rep))?;
     std::fs::write(p("lockgraph.json"), serde_json::to_string_pretty(rep)?)?;
-    let dot = report::dot(g);
-    std::fs::write(p("lockgraph.dot"), &dot)?;
+
+    eprintln!("[lockdex] writing pprof + hprof ...");
     export::write_file(&p("lockorder.pb.gz"), &export::pprof_lock_order(g))?;
     export::write_file(&p("methodlock.hprof"), &export::hprof_method_graph(an))?;
 
-    // best-effort SVG via graphviz, if present.
-    if let Ok(out) = std::process::Command::new("dot").arg("-Tsvg").arg(p("lockgraph.dot")).output() {
-        if out.status.success() {
-            let _ = std::fs::write(p("lockgraph.svg"), out.stdout);
+    // Full graph DOT (for tooling) — written but NOT rendered: too many edges.
+    std::fs::write(p("lockgraph.dot"), report::dot(g))?;
+    // Cycle subgraph DOT (small) — this is the one worth viewing; render to SVG.
+    let cyc = report::dot_cycles(g);
+    std::fs::write(p("cycles.dot"), &cyc)?;
+    eprintln!("[lockdex] rendering cycle SVG with graphviz (skip if dot is missing) ...");
+    match std::process::Command::new("dot")
+        .arg("-Tsvg")
+        .arg(p("cycles.dot"))
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            std::fs::write(p("cycles.svg"), out.stdout)?;
         }
+        Ok(_) => eprintln!("[lockdex] (graphviz failed; cycles.dot written, render it yourself)"),
+        Err(_) => eprintln!("[lockdex] (graphviz `dot` not found; skipped SVG, cycles.dot written)"),
     }
     eprintln!("[lockdex] artifacts written to {}", dir.display());
     Ok(())
