@@ -30,11 +30,26 @@ fn is_lock_type(class: &str) -> bool {
     ) || class.contains("locks.")
 }
 
-pub fn classify(class: &str, name: &str) -> Option<LockCall> {
+/// User adjustments to the async-sink list, loaded from `--async-sinks FILE`.
+/// Each entry is `SimpleClass.method` or a bare `method`; `add` makes something a
+/// sink, `remove` disables a built-in. Both are additive to the defaults.
+#[derive(Default)]
+pub struct SinkConfig {
+    pub add: std::collections::HashSet<String>,
+    pub remove: std::collections::HashSet<String>,
+}
+
+impl SinkConfig {
+    fn hit(set: &std::collections::HashSet<String>, simple: &str, name: &str) -> bool {
+        set.contains(name) || set.contains(&format!("{simple}.{name}"))
+    }
+}
+
+pub fn classify(class: &str, name: &str, cfg: &SinkConfig) -> Option<LockCall> {
     let simple = class.rsplit('.').next().unwrap_or(class);
 
     // --- async sinks: anything that defers a Runnable/Message to run later ---
-    let async_sink = matches!(
+    let builtin_async = matches!(
         (simple, name),
         ("Handler", "post")
             | ("Handler", "postDelayed")
@@ -51,6 +66,9 @@ pub fn classify(class: &str, name: &str) -> Option<LockCall> {
             | ("AsyncTask", "executeOnExecutor")
     ) || (name == "execute" && simple.contains("Executor"))
         || (name == "post" && simple.contains("Handler"));
+    // user add/remove overlays the defaults.
+    let async_sink = (builtin_async || SinkConfig::hit(&cfg.add, simple, name))
+        && !SinkConfig::hit(&cfg.remove, simple, name);
     if async_sink {
         return Some(LockCall::AsyncSink);
     }

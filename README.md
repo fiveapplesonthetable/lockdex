@@ -221,6 +221,33 @@ hierarchies. Candidates are then filtered:
 
 What remains is reported, smallest (most actionable) cycles first.
 
+## Tuning the async list
+
+Held locks are *severed* at calls that defer work to another thread, so a lock
+held when work is posted is not treated as held when it runs. The built-ins cover
+`Handler.post*` / `sendMessage*`, `Executor.execute`, `ExecutorService.submit`,
+`Thread.start`, `AsyncTask.execute`, etc. — but only by name, so a project's own
+dispatcher won't be recognized.
+
+`--async-sinks FILE` adjusts the list on top of the built-ins. One entry per line,
+`SimpleClass.method` or a bare `method`; a leading `-` disables a built-in; `#`
+comments:
+
+```
+# treat our own dispatcher as async
+MyDispatcher.runLater
+postToBackground
+# ...and stop treating AsyncTask.execute as async
+-AsyncTask.execute
+```
+
+```sh
+lockdex analyze "$ANDROID_BUILD_TOP/out" --out-dir ./out --async-sinks ./async-sinks.txt
+```
+
+Adding a sink removes false edges (a post that isn't followed); removing one adds
+edges back. It is a list, so add or remove freely without rebuilding.
+
 ## Tests
 
 `tests/corpus/` holds small Java programs, each with the verdict it should

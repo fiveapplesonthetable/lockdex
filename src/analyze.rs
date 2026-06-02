@@ -132,7 +132,7 @@ impl PathIndex {
     }
 }
 
-pub fn analyze(dex: &Dex) -> Analysis {
+pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
     let t = Instant::now();
     let methods: Vec<&Method> = dex.classes.iter().flat_map(|c| c.methods.iter()).collect();
     let supertypes = build_supertypes(dex);
@@ -141,9 +141,9 @@ pub fn analyze(dex: &Dex) -> Analysis {
     let empty: HashMap<String, Lock> = HashMap::new();
     let value_summaries: HashMap<String, Lock> = methods
         .par_iter()
-        .filter_map(|m| extract(m, &empty).value_summary.map(|v| (m.key(), v)))
+        .filter_map(|m| extract(m, &empty, cfg).value_summary.map(|v| (m.key(), v)))
         .collect();
-    let summaries: Vec<Summary> = methods.par_iter().map(|m| extract(m, &value_summaries)).collect();
+    let summaries: Vec<Summary> = methods.par_iter().map(|m| extract(m, &value_summaries, cfg)).collect();
     let mut by_key: HashMap<String, Summary> = HashMap::new();
     for s in summaries {
         by_key.entry(s.key.clone()).or_insert(s);
@@ -569,7 +569,7 @@ fn may_acquire(
 // per-method extraction
 // ---------------------------------------------------------------------------
 
-fn extract(m: &Method, value_summaries: &HashMap<String, Lock>) -> Summary {
+fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: &juc::SinkConfig) -> Summary {
     let mut s = Summary { key: m.key(), class: m.class.clone(), ..Default::default() };
     let mut regs: HashMap<Reg, Lock> = HashMap::new();
     let mut alloc_ty: HashMap<String, String> = HashMap::new(); // alloc site -> type
@@ -648,7 +648,7 @@ fn extract(m: &Method, value_summaries: &HashMap<String, Lock>) -> Summary {
                         }
                     }
                 }
-                match juc::classify(&inv.class, &inv.name) {
+                match juc::classify(&inv.class, &inv.name, cfg) {
                     Some(LockCall::ReadView) => {
                         last_ret = inv.args.first().and_then(|r| regs.get(r)).map(|l| l.with_mode(Mode::Read));
                     }
@@ -656,7 +656,7 @@ fn extract(m: &Method, value_summaries: &HashMap<String, Lock>) -> Summary {
                         last_ret = inv.args.first().and_then(|r| regs.get(r)).map(|l| l.with_mode(Mode::Write));
                     }
                     Some(LockCall::Acquire) | Some(LockCall::TryAcquire) => {
-                        let nb = matches!(juc::classify(&inv.class, &inv.name), Some(LockCall::TryAcquire));
+                        let nb = matches!(juc::classify(&inv.class, &inv.name, cfg), Some(LockCall::TryAcquire));
                         let lock = inv.args.first().and_then(|r| regs.get(r)).cloned()
                             .unwrap_or_else(|| Lock::new(Root::Opaque(format!("{}+{:04x}", m.key(), insn.offset))));
                         acquire(&mut s, m, &mut held, lock, line_at(insn.offset), nb);

@@ -38,6 +38,11 @@ enum Cmd {
         /// narrow a Soong out dir to jars whose name contains this (e.g. services)
         #[arg(long)]
         scope: Option<String>,
+        /// file of async-sink adjustments: `Class.method` to add, `-Class.method`
+        /// to disable a built-in (one per line, `#` comments). Added on top of the
+        /// defaults (Handler.post, Executor.execute, Thread.start, ...).
+        #[arg(long)]
+        async_sinks: Option<PathBuf>,
     },
     /// Analyze, then pull the source for each candidate cycle and print a verdict.
     Verify {
@@ -55,13 +60,37 @@ enum Cmd {
         /// write the verification report here instead of stdout
         #[arg(long)]
         out: Option<PathBuf>,
+        /// async-sink adjustments file (see `analyze --async-sinks`)
+        #[arg(long)]
+        async_sinks: Option<PathBuf>,
     },
+}
+
+/// Load `--async-sinks` adjustments: `Class.method` / `method` adds a sink,
+/// a leading `-` disables a built-in. Blank lines and `#` comments are ignored.
+fn load_sinks(path: Option<&Path>) -> Result<juc::SinkConfig> {
+    let mut cfg = juc::SinkConfig::default();
+    let Some(p) = path else { return Ok(cfg) };
+    let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+    for line in text.lines() {
+        let s = line.split('#').next().unwrap_or("").trim();
+        if s.is_empty() {
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix('-') {
+            cfg.remove.insert(rest.trim().to_string());
+        } else {
+            cfg.add.insert(s.trim_start_matches('+').trim().to_string());
+        }
+    }
+    eprintln!("[lockdex] async sinks: +{} -{} (on top of built-ins)", cfg.add.len(), cfg.remove.len());
+    Ok(cfg)
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Analyze { input, format, out_dir, scope } => {
+        Cmd::Analyze { input, format, out_dir, scope, async_sinks } => {
             let t0 = std::time::Instant::now();
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
@@ -71,7 +100,8 @@ fn main() -> Result<()> {
                 dex.classes.len(),
                 t0.elapsed().as_secs_f64()
             );
-            let an = analyze::analyze(&dex);
+            let sinks = load_sinks(async_sinks.as_deref())?;
+            let an = analyze::analyze(&dex, &sinks);
             let g = graph::LockGraph::build(&an.edges, &an.all_locks);
             let rep = report::build_json(&an, &g);
             eprintln!(
@@ -99,12 +129,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Verify { input, src_root, max_locks, scope, out } => {
+        Cmd::Verify { input, src_root, max_locks, scope, out, async_sinks } => {
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
             eprintln!("[lockdex] parsed {} classes", dex.classes.len());
-            let an = analyze::analyze(&dex);
+            let sinks = load_sinks(async_sinks.as_deref())?;
+            let an = analyze::analyze(&dex, &sinks);
             let g = graph::LockGraph::build(&an.edges, &an.all_locks);
             let rep = report::build_json(&an, &g);
             eprintln!(
