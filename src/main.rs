@@ -57,15 +57,15 @@ enum Cmd {
         /// narrow a Soong out dir to jars whose name contains this
         #[arg(long)]
         scope: Option<String>,
-        /// write the verification report here instead of stdout
+        /// write just the text report to this file (instead of stdout)
         #[arg(long)]
         out: Option<PathBuf>,
+        /// write the full bundle here: verify.txt + per-candidate dot/svg/pprof/hprof
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
         /// async-sink adjustments file (see `analyze --async-sinks`)
         #[arg(long)]
         async_sinks: Option<PathBuf>,
-        /// also write one SVG per candidate cycle (the call-path DAG) into this dir
-        #[arg(long)]
-        svg_dir: Option<PathBuf>,
     },
 }
 
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Verify { input, src_root, max_locks, scope, out, async_sinks, svg_dir } => {
+        Cmd::Verify { input, src_root, max_locks, scope, out, out_dir, async_sinks } => {
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
@@ -145,16 +145,19 @@ fn main() -> Result<()> {
                 "[lockdex] {} cycles; verifying those with <= {} locks against {}",
                 rep.cycles.len(), max_locks, src_root.display()
             );
-            let txt = verify::run(&rep, &an.paths, &src_root, max_locks, svg_dir.as_deref());
-            if let Some(d) = &svg_dir {
-                eprintln!("[lockdex] per-candidate SVGs written to {}", d.display());
-            }
-            match out {
-                Some(p) => {
-                    std::fs::write(&p, &txt)?;
-                    eprintln!("[lockdex] verification written to {}", p.display());
-                }
-                None => print!("{txt}"),
+            let txt = verify::run(&rep, &an.paths, &src_root, max_locks, out_dir.as_deref());
+            if let Some(d) = &out_dir {
+                std::fs::create_dir_all(d)?;
+                std::fs::write(d.join("verify.txt"), &txt)?;
+                eprintln!(
+                    "[lockdex] verify.txt + per-candidate dot/svg/pprof/hprof written to {}",
+                    d.display()
+                );
+            } else if let Some(p) = &out {
+                std::fs::write(p, &txt)?;
+                eprintln!("[lockdex] verification written to {}", p.display());
+            } else {
+                print!("{txt}");
             }
         }
     }

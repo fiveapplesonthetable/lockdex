@@ -106,6 +106,22 @@ fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// The method graph for one deadlock: every call edge `(caller, heldLock, callee)`
+/// along the paths of the cycle's order edges. Feeds the per-candidate pprof/hprof.
+fn candidate_method_edges(c: &CycleReport, paths: &crate::analyze::PathIndex) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for e in &c.edges {
+        let holder = e.sample.as_deref().and_then(parse_sample).map(|(mk, _, _)| mk);
+        if let Some(p) = holder.as_deref().and_then(|h| paths.path_to(h, &e.to, 16)) {
+            let held = short_lock(&e.from);
+            for w in p.windows(2) {
+                out.push((short_method(&w[0]), held.clone(), short_method(&w[1])));
+            }
+        }
+    }
+    out
+}
+
 /// One candidate cycle as a Graphviz DAG: lock nodes (red boxes) joined by the
 /// actual call path of each order edge (held-in → calls… → acquires). The two
 /// edges share the lock nodes, so the AB-BA loop is visible.
@@ -182,7 +198,7 @@ pub fn run(
     paths: &crate::analyze::PathIndex,
     root: &Path,
     max_locks: usize,
-    svg_dir: Option<&Path>,
+    out_dir: Option<&Path>,
 ) -> String {
     let mut src = Source::index(root);
     let mut out = String::new();
@@ -265,17 +281,23 @@ pub fn run(
         };
         let _ = writeln!(out, "\n   VERDICT: {verdict}\n");
 
-        // per-candidate SVG DAG: the locks + the real call path on each edge.
-        if let Some(d) = svg_dir {
+        // per-candidate artifacts: the call-path DAG (dot/svg) plus the method
+        // graph for *this* deadlock as pprof + hprof.
+        if let Some(d) = out_dir {
             let _ = std::fs::create_dir_all(d);
-            let dot = cycle_dot(c, paths);
             let base = d.join(format!("cand{:02}", ci + 1));
+            let dot = cycle_dot(c, paths);
             let dotp = base.with_extension("dot");
             let _ = std::fs::write(&dotp, &dot);
             if let Ok(o) = std::process::Command::new("dot").arg("-Tsvg").arg(&dotp).output() {
                 if o.status.success() {
                     let _ = std::fs::write(base.with_extension("svg"), o.stdout);
                 }
+            }
+            let me = candidate_method_edges(c, paths);
+            if !me.is_empty() {
+                let _ = crate::export::write_file(&base.with_extension("pb.gz"), &crate::export::pprof_method_edges(&me));
+                let _ = crate::export::write_file(&base.with_extension("hprof"), &crate::export::hprof_method_edges(&me));
             }
         }
     }

@@ -340,13 +340,107 @@ impl Hprof {
     }
 }
 
-/// Build a method/lock-graph HPROF: object per method, references named by the
-/// lock held at each call edge.
+/// pprof of a method graph `(caller, lock, callee)`: each method is a Function,
+/// each call edge a Sample with stack `[callee, caller]`, value 1, tagged with
+/// the held lock — so `go tool pprof` renders the call graph for one deadlock.
+pub fn pprof_method_edges(edges: &[(String, String, String)]) -> Vec<u8> {
+    let mut node_idx: HashMap<String, u64> = HashMap::new();
+    let mut nodes: Vec<String> = Vec::new();
+    let node_of = |m: &str, nodes: &mut Vec<String>, node_idx: &mut HashMap<String, u64>| -> u64 {
+        if let Some(&i) = node_idx.get(m) {
+            return i;
+        }
+        let i = nodes.len() as u64;
+        nodes.push(m.to_string());
+        node_idx.insert(m.to_string(), i);
+        i
+    };
+    let mut strtab: Vec<String> = vec![String::new()];
+    let mut sidx: HashMap<String, u64> = HashMap::new();
+    sidx.insert(String::new(), 0);
+    let intern = |x: &str, strtab: &mut Vec<String>, sidx: &mut HashMap<String, u64>| -> u64 {
+        if let Some(&i) = sidx.get(x) {
+            return i;
+        }
+        let i = strtab.len() as u64;
+        strtab.push(x.to_string());
+        sidx.insert(x.to_string(), i);
+        i
+    };
+    let st_calls = intern("calls", &mut strtab, &mut sidx);
+    let st_count = intern("count", &mut strtab, &mut sidx);
+    let st_lock = intern("lock", &mut strtab, &mut sidx);
+
+    let mut samples: Vec<(u64, u64, String)> = Vec::new();
+    for (caller, lock, callee) in edges {
+        let ca = node_of(caller, &mut nodes, &mut node_idx);
+        let ce = node_of(callee, &mut nodes, &mut node_idx);
+        samples.push((ce, ca, lock.clone()));
+    }
+    let name_sid: Vec<u64> = nodes.iter().map(|n| intern(n, &mut strtab, &mut sidx)).collect();
+
+    let mut prof: Vec<u8> = Vec::new();
+    {
+        let mut vt = Vec::new();
+        vint(1, st_calls, &mut vt);
+        vint(2, st_count, &mut vt);
+        ld(1, &vt, &mut prof);
+    }
+    for (ce, ca, lock) in &samples {
+        let lock_sid = intern(lock, &mut strtab, &mut sidx);
+        let mut sm = Vec::new();
+        packed(1, &[ce + 1, ca + 1], &mut sm);
+        packed(2, &[1], &mut sm);
+        let mut lab = Vec::new();
+        vint(1, st_lock, &mut lab);
+        vint(2, lock_sid, &mut lab);
+        ld(3, &lab, &mut sm);
+        ld(2, &sm, &mut prof);
+    }
+    for i in 0..nodes.len() as u64 {
+        let mut line = Vec::new();
+        vint(1, i + 1, &mut line);
+        vint(2, 0, &mut line);
+        let mut loc = Vec::new();
+        vint(1, i + 1, &mut loc);
+        ld(4, &line, &mut loc);
+        ld(4, &loc, &mut prof);
+    }
+    for i in 0..nodes.len() as u64 {
+        let mut fnc = Vec::new();
+        vint(1, i + 1, &mut fnc);
+        vint(2, name_sid[i as usize], &mut fnc);
+        vint(3, name_sid[i as usize], &mut fnc);
+        vint(4, name_sid[i as usize], &mut fnc);
+        ld(5, &fnc, &mut prof);
+    }
+    for s in &strtab {
+        ld(6, s.as_bytes(), &mut prof);
+    }
+    vint(9, 0, &mut prof);
+    {
+        let mut pt = Vec::new();
+        vint(1, st_calls, &mut pt);
+        vint(2, st_count, &mut pt);
+        ld(11, &pt, &mut prof);
+    }
+    vint(12, 1, &mut prof);
+    gzip(&prof)
+}
+
+/// Build a method/lock-graph HPROF for the whole analysis.
 pub fn hprof_method_graph(an: &Analysis) -> Vec<u8> {
+    hprof_method_edges(&an.method_edges)
+}
+
+/// Build a method/lock-graph HPROF from a method-edge list `(caller, lock, callee)`:
+/// object per method, references named by the lock held at each call edge. Used
+/// both for the whole graph and for a single deadlock's method subgraph.
+pub fn hprof_method_edges(edges: &[(String, String, String)]) -> Vec<u8> {
     // group edges by caller, preserving (lock, callee) order.
     let mut by_caller: HashMap<&str, Vec<(&str, &str)>> = HashMap::new();
     let mut nodes: HashSet<&str> = HashSet::new();
-    for (caller, lock, callee) in &an.method_edges {
+    for (caller, lock, callee) in edges {
         by_caller.entry(caller).or_default().push((lock, callee));
         nodes.insert(caller);
         nodes.insert(callee);

@@ -156,10 +156,14 @@ CANDIDATE 1 : 2 locks
             opposite order. Real AB-BA if the two sites can run on different threads.
 ```
 
-`--svg-dir DIR` additionally writes one SVG per candidate (`cand01.svg`, …): the
-locks as red boxes joined by the actual call path of each order edge
-(`held in → calls… → acquires`). The two edges share the lock nodes, so the AB-BA
-loop is the cycle — a quick visual for each candidate.
+`--out-dir DIR` writes the bundle: `verify.txt` plus, per candidate cycle,
+`candNN.{dot,svg,pb.gz,hprof}`. The `svg`/`dot` is the call-path DAG — the locks
+as red boxes joined by the actual call path of each order edge
+(`held in → calls… → acquires`), the shared lock nodes forming the AB-BA loop;
+it's the view to *look at* one deadlock. The `pb.gz` (pprof) and `hprof` are that
+single deadlock's **method graph** for drilling/filtering (`go tool pprof`,
+Perfetto) — handy when a candidate's paths are large. (`--out FILE` still writes
+just the text report.)
 
 The verdict stops short of asserting the deadlock: confirming it also needs the
 two sites to run on different threads concurrently, which the tool deliberately
