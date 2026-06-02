@@ -82,7 +82,42 @@ the flat/cum weights rank the busiest locks. In the HPROF (drag it into
 named by the lock held at the call, so walking the heap graph walks the lock
 dependency chain.
 
-Output is deterministic: the same dex always produces byte-identical artifacts.
+With `--out-dir`, stdout is a short summary of what was found and which files
+hold it (the full report goes to `report.txt`, not the terminal). Without it, the
+full text report prints to stdout. Output is deterministic: the same dex always
+produces byte-identical artifacts.
+
+## Reading the report
+
+`report.txt` opens with a one-line summary, then the findings, smallest first:
+
+```
+=== DEADLOCK #1: 2 locks ===
+   com.android.server.am.UserController.mLock
+   com.android.server.pm.UserManagerService.mUsersLock
+   conflicting order edges:
+     UserController.mLock -> UserManagerService.mUsersLock  [7x]  …UserController.finishUserStopped(…):1607 (interproc)
+     UserManagerService.mUsersLock -> UserController.mLock   [1x]  …UserManagerService.removeUserState(…):7733 (interproc)
+```
+
+- The two indented lines are the **locks in the cycle** (their canonical
+  `Class.field` identities).
+- Each **order edge** `A -> B` reads as: *at this `file:line`, `A` is held and the
+  code reaches an acquisition of `B`.* `[7x]` is how many distinct sites induce
+  that ordering; `interproc` means `B` is taken in a callee (a `nested` tag means
+  both locks are taken in the one method).
+- The two edges together are the **inversion**: one path takes A→B, another takes
+  B→A. That is the AB-BA. To confirm it is a real deadlock you still need the two
+  sites to run on different threads (see below).
+
+A **`LOCK TANGLE`** block instead of `DEADLOCK` is a large strongly-connected
+component — many locks mutually out-of-order. These reflect a globally
+interconnected lock hierarchy (the `system_server` AMS/ATMS/WMS locks are the
+classic case) rather than one fixable inversion; skim them, but the small
+`DEADLOCK` cycles are where the actionable bugs are.
+
+Open `cycles.svg` for the same small cycles as a picture, and use `verify` to pull
+the exact source for any of them.
 
 ## Verifying candidates against source
 

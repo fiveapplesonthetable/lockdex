@@ -82,13 +82,21 @@ fn main() -> Result<()> {
 
             if let Some(dir) = &out_dir {
                 write_artifacts(dir, &an, &g, &rep)?;
-            }
-
-            match format.as_str() {
-                "json" => println!("{}", serde_json::to_string_pretty(&rep)?),
-                "dot" => print!("{}", report::dot(&g)),
-                "none" => {}
-                _ => print!("{}", report::text(&rep)),
+                // with --out-dir the full report lives in report.txt; on stdout
+                // just say what was written (unless an explicit pipe format).
+                match format.as_str() {
+                    "json" => println!("{}", serde_json::to_string_pretty(&rep)?),
+                    "dot" => print!("{}", report::dot(&g)),
+                    "none" => {}
+                    _ => print!("{}", outputs_summary(dir, &rep)),
+                }
+            } else {
+                match format.as_str() {
+                    "json" => println!("{}", serde_json::to_string_pretty(&rep)?),
+                    "dot" => print!("{}", report::dot(&g)),
+                    "none" => {}
+                    _ => print!("{}", report::text(&rep)),
+                }
             }
         }
         Cmd::Verify { input, src_root, max_locks, scope, out } => {
@@ -114,6 +122,40 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Concise stdout when `--out-dir` is used: what was found + which files hold it.
+fn outputs_summary(dir: &Path, rep: &report::JsonReport) -> String {
+    use std::fmt::Write as _;
+    let small = rep.cycles.iter().filter(|c| c.locks.len() <= 12).count();
+    let tangles = rep.cycles.len() - small;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "lockdex: {} deadlock cycle(s) — {} small (actionable), {} large tangle(s); {} suppressed by guard.",
+        rep.cycles.len(), small, tangles, rep.suppressed.len()
+    );
+    let _ = writeln!(s, "outputs in {}:", dir.display());
+    let entries: &[(&str, &str)] = &[
+        ("report.txt", "the report — read this first (cycles, locks, file:line)"),
+        ("cycles.svg", "the small cycles, drawn (open in a browser)"),
+        ("lockgraph.json", "full graph + findings, for tooling"),
+        ("lockorder.pb.gz", "pprof — go tool pprof -http=: <dir>/lockorder.pb.gz"),
+        ("methodlock.hprof", "Perfetto heap graph — drag into https://ui.perfetto.dev"),
+        ("lockgraph.dot", "full graph for tooling (not rendered)"),
+    ];
+    for (f, desc) in entries {
+        if dir.join(f).exists() {
+            let _ = writeln!(s, "  {:<17} {}", f, desc);
+        }
+    }
+    let _ = writeln!(
+        s,
+        "\nnext: open {0}/report.txt — or verify a cycle against source:\n  \
+         lockdex verify <input> --src-root <aosp> --max-locks 3",
+        dir.display()
+    );
+    s
 }
 
 fn write_artifacts(
