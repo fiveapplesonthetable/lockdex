@@ -64,7 +64,7 @@ fn main() -> Result<()> {
         Cmd::Analyze { input, format, out_dir, scope } => {
             let t0 = std::time::Instant::now();
             let set = input::resolve(&input, scope.as_deref())?;
-            eprintln!("[lockdex] {} dex file(s)", set.files.len());
+            eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
             eprintln!(
                 "[lockdex] parsed {} classes in {:.1}s",
@@ -93,8 +93,9 @@ fn main() -> Result<()> {
         }
         Cmd::Verify { input, src_root, max_locks, scope, out } => {
             let set = input::resolve(&input, scope.as_deref())?;
-            eprintln!("[lockdex] {} dex file(s)", set.files.len());
+            eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
+            eprintln!("[lockdex] parsed {} classes", dex.classes.len());
             let an = analyze::analyze(&dex);
             let g = graph::LockGraph::build(&an.edges, &an.all_locks);
             let rep = report::build_json(&an, &g);

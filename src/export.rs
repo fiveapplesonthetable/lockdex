@@ -75,7 +75,7 @@ pub fn pprof_lock_order(g: &LockGraph) -> Vec<u8> {
     let mut strtab: Vec<String> = vec![String::new()];
     let mut idx: HashMap<String, u64> = HashMap::new();
     idx.insert(String::new(), 0);
-    let mut intern = |x: &str, strtab: &mut Vec<String>, idx: &mut HashMap<String, u64>| -> u64 {
+    let intern = |x: &str, strtab: &mut Vec<String>, idx: &mut HashMap<String, u64>| -> u64 {
         if let Some(&i) = idx.get(x) {
             return i;
         }

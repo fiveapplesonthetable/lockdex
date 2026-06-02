@@ -11,6 +11,7 @@ use crate::juc::{self, LockCall};
 use crate::model::*;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct Edge {
@@ -74,113 +75,150 @@ pub struct Analysis {
 }
 
 pub fn analyze(dex: &Dex) -> Analysis {
+    let t = Instant::now();
     let methods: Vec<&Method> = dex.classes.iter().flat_map(|c| c.methods.iter()).collect();
-
-    // class hierarchy (for RTA subtype filtering).
     let supertypes = build_supertypes(dex);
 
-    // --- pass A: value summaries --------------------------------------------
+    // --- per-method summaries (parallel: value summaries, then full) ---------
     let empty: HashMap<String, Lock> = HashMap::new();
     let value_summaries: HashMap<String, Lock> = methods
         .par_iter()
         .filter_map(|m| extract(m, &empty).value_summary.map(|v| (m.key(), v)))
         .collect();
-
-    // --- pass B: full extraction --------------------------------------------
     let summaries: Vec<Summary> = methods.par_iter().map(|m| extract(m, &value_summaries)).collect();
     let mut by_key: HashMap<String, Summary> = HashMap::new();
     for s in summaries {
         by_key.entry(s.key.clone()).or_insert(s);
     }
+    let ncalls: usize = by_key.values().map(|s| s.calls.len()).sum();
+    eprintln!(
+        "[lockdex] summarized {} methods, {} call sites, {} getters in {:.1}s",
+        by_key.len(), ncalls, value_summaries.len(), t.elapsed().as_secs_f64()
+    );
 
-    // --- global indices ------------------------------------------------------
+    // --- global indices + call graph (parallel resolution) -------------------
     let methods_by_namesig = index_namesig(&by_key);
-    let instantiated: HashSet<String> = by_key
-        .values()
-        .flat_map(|s| s.allocs.iter().map(|(_, t)| t.clone()))
-        .collect();
+    let instantiated: HashSet<String> =
+        by_key.values().flat_map(|s| s.allocs.iter().map(|(_, t)| t.clone())).collect();
     let ctor_captures = index_ctor_captures(&by_key);
     let capture_map = build_capture_map(&by_key, &ctor_captures);
-
     let cg = CallGraph { methods_by_namesig, instantiated, supertypes };
 
-    // resolve every call's candidate callees once.
+    let tcg = Instant::now();
     let resolved: HashMap<String, Vec<Vec<String>>> = by_key
         .par_iter()
         .map(|(k, s)| (k.clone(), s.calls.iter().map(|c| cg.resolve(c, &by_key)).collect()))
         .collect();
+    eprintln!(
+        "[lockdex] resolved call graph ({} instantiated types, poly<= {}) in {:.1}s",
+        cg.instantiated.len(), POLY_LIMIT, tcg.elapsed().as_secs_f64()
+    );
 
-    // --- mayAcquire fixpoint -------------------------------------------------
-    let may = may_acquire(&by_key, &resolved);
+    // --- lock-propagation fixpoint (parallel per round) ----------------------
+    let tfp = Instant::now();
+    let (may, iters) = may_acquire(&by_key, &resolved);
+    eprintln!("[lockdex] lock-propagation fixpoint: {} rounds in {:.1}s", iters, tfp.elapsed().as_secs_f64());
 
-    // --- edge assembly -------------------------------------------------------
-    let mut edges: Vec<Edge> = Vec::new();
-    let mut all_locks: HashSet<Lock> = HashSet::new();
-    let mut method_edges: Vec<(String, String, String)> = Vec::new();
+    // --- edge assembly (parallel per method) ---------------------------------
+    let tea = Instant::now();
     let mut asm_keys: Vec<&String> = by_key.keys().collect();
     asm_keys.sort();
-    for k in asm_keys {
-        let s = &by_key[k];
-        for e in &s.intra_edges {
-            let from = resolve_lock(&e.from, s, &capture_map);
-            let to = resolve_lock(&e.to, s, &capture_map);
-            all_locks.insert(from.clone());
-            all_locks.insert(to.clone());
-            if from != to && !from.is_opaque() && !to.is_opaque() {
-                let guard = e.guard.iter().map(|g| resolve_lock(g, s, &capture_map)).collect();
-                edges.push(Edge { from, to, guard, ..e.clone() });
+    let parts: Vec<(Vec<Edge>, Vec<(String, String, String)>, Vec<Lock>)> = asm_keys
+        .par_iter()
+        .map(|k| assemble_one(k, &by_key[*k], &resolved, &may, &capture_map))
+        .collect();
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut method_edges: Vec<(String, String, String)> = Vec::new();
+    let mut all_locks: HashSet<Lock> = HashSet::new();
+    for (e, me, locks) in parts {
+        edges.extend(e);
+        method_edges.extend(me);
+        all_locks.extend(locks);
+    }
+    eprintln!(
+        "[lockdex] assembled {} order edges over {} locks in {:.1}s",
+        edges.len(), all_locks.len(), tea.elapsed().as_secs_f64()
+    );
+
+    Analysis { edges, all_locks, method_count: by_key.len(), method_edges }
+}
+
+/// Assemble one method's contribution to the lock-order graph (pure / parallel).
+fn assemble_one(
+    k: &str,
+    s: &Summary,
+    resolved: &HashMap<String, Vec<Vec<String>>>,
+    may: &HashMap<String, Vec<Lock>>,
+    capture_map: &HashMap<String, HashMap<String, Lock>>,
+) -> (Vec<Edge>, Vec<(String, String, String)>, Vec<Lock>) {
+    let mut edges: Vec<Edge> = Vec::new();
+    let mut method_edges: Vec<(String, String, String)> = Vec::new();
+    let mut locks: Vec<Lock> = Vec::new();
+
+    for e in &s.intra_edges {
+        let from = resolve_lock(&e.from, s, capture_map);
+        let to = resolve_lock(&e.to, s, capture_map);
+        locks.push(from.clone());
+        locks.push(to.clone());
+        if from != to && !from.is_opaque() && !to.is_opaque() {
+            let guard = e.guard.iter().map(|g| resolve_lock(g, s, capture_map)).collect();
+            edges.push(Edge { from, to, guard, ..e.clone() });
+        }
+    }
+    for l in &s.acquires {
+        locks.push(resolve_lock(&ground(l, &s.class, k), s, capture_map));
+    }
+    let rk = resolved.get(k);
+    for (ci, call) in s.calls.iter().enumerate() {
+        if call.is_async {
+            continue;
+        }
+        let callees: &[String] = rk.and_then(|v| v.get(ci)).map(Vec::as_slice).unwrap_or(&[]);
+        let held: Vec<Lock> = call.held.iter().map(|h| resolve_lock(h, s, capture_map)).collect();
+        if let Some(inner) = held.last() {
+            for callee in callees {
+                method_edges.push((k.to_string(), inner.name(), callee.clone()));
             }
         }
-        for l in &s.acquires {
-            all_locks.insert(resolve_lock(&ground(l, &s.class, k), s, &capture_map));
-        }
-        for (ci, call) in s.calls.iter().enumerate() {
-            if call.is_async {
-                continue;
-            }
-            let held: Vec<Lock> = call.held.iter().map(|h| resolve_lock(h, s, &capture_map)).collect();
-            // method dependency edge: caller -> callee, labelled by innermost held lock.
-            if let Some(inner) = held.last() {
-                for callee in &resolved[k][ci] {
-                    method_edges.push((k.clone(), inner.name(), callee.clone()));
-                }
-            }
-            for callee in &resolved[k][ci] {
-                let Some(callee_may) = may.get(callee) else { continue };
-                for cl in callee_may {
-                    let Some(sub) = subst_or_self(cl, &call.args) else { continue };
-                    let g = resolve_lock(&ground(&sub, &s.class, k), s, &capture_map);
-                    all_locks.insert(g.clone());
-                    for h in &held {
-                        if h != &g && !h.is_opaque() && !g.is_opaque() {
-                            let mut guard = held.clone();
-                            guard.push(g.clone());
-                            edges.push(Edge {
-                                from: h.clone(),
-                                to: g.clone(),
-                                method: k.clone(),
-                                file: None,
-                                line: call.line,
-                                interproc: true,
-                                guard,
-                                nonblocking: false,
-                            });
-                        }
+        for callee in callees {
+            let Some(callee_may) = may.get(callee) else { continue };
+            for cl in callee_may {
+                let Some(sub) = subst_or_self(cl, &call.args) else { continue };
+                let g = resolve_lock(&ground(&sub, &s.class, k), s, capture_map);
+                locks.push(g.clone());
+                for h in &held {
+                    if h != &g && !h.is_opaque() && !g.is_opaque() {
+                        let mut guard = held.clone();
+                        guard.push(g.clone());
+                        edges.push(Edge {
+                            from: h.clone(),
+                            to: g.clone(),
+                            method: k.to_string(),
+                            file: None,
+                            line: call.line,
+                            interproc: true,
+                            guard,
+                            nonblocking: false,
+                        });
                     }
                 }
             }
         }
     }
-
-    Analysis { edges, all_locks, method_count: by_key.len(), method_edges }
+    (edges, method_edges, locks)
 }
 
 // ---------------------------------------------------------------------------
 // call graph (CHA + RTA + receiver refinement)
 // ---------------------------------------------------------------------------
 
-/// Cap on resolved targets for a virtual/interface call (megamorphic sites).
-const RTA_FANOUT_CAP: usize = 24;
+/// A virtual/interface site with more than this many instantiated candidate
+/// targets is treated as *megamorphic*: we resolve it to the declared target only
+/// (if that has a body), otherwise to nothing. Dropping the fan-out is sound — an
+/// unresolved call adds no edges, so we miss rather than fabricate — and it stops
+/// one spurious dispatch target from welding unrelated lock clusters into a single
+/// giant SCC. Small (mono/poly-morphic) sites are resolved precisely.
+const POLY_LIMIT: usize = 4;
 
 struct CallGraph {
     methods_by_namesig: HashMap<String, Vec<String>>,
@@ -207,29 +245,35 @@ impl CallGraph {
                         return vec![k];
                     }
                 }
-                // declared target, if it has a body.
-                let mut out: Vec<String> = Vec::new();
                 let dk = c.declared_key();
-                if by_key.contains_key(&dk) {
-                    out.push(dk);
-                }
+                let has_body = by_key.contains_key(&dk);
                 // RTA: instantiated subtypes of the declared class with this name:sig.
+                let mut subs: Vec<String> = Vec::new();
+                let mut megamorphic = false;
                 if let Some(cands) = self.methods_by_namesig.get(&c.namesig()) {
                     for cand in cands {
                         let cclass = class_of_key(cand);
-                        if self.instantiated.contains(cclass) && self.is_subtype(cclass, &c.dclass) {
-                            if !out.contains(cand) {
-                                out.push(cand.clone());
+                        if self.instantiated.contains(cclass)
+                            && self.is_subtype(cclass, &c.dclass)
+                            && *cand != dk
+                        {
+                            subs.push(cand.clone());
+                            if subs.len() > POLY_LIMIT {
+                                megamorphic = true;
+                                break;
                             }
-                        }
-                        // megamorphic call site: stop resolving (precision lost
-                        // anyway, and unbounded fan-out wrecks scale).
-                        if out.len() >= RTA_FANOUT_CAP {
-                            break;
                         }
                     }
                 }
-                out
+                if megamorphic {
+                    // drop the fan-out; keep only a concrete declared body if any.
+                    if has_body { vec![dk] } else { vec![] }
+                } else {
+                    if has_body {
+                        subs.push(dk);
+                    }
+                    subs
+                }
             }
         }
     }
@@ -366,7 +410,7 @@ const MAY_CAP: usize = 96;
 fn may_acquire(
     by_key: &HashMap<String, Summary>,
     resolved: &HashMap<String, Vec<Vec<String>>>,
-) -> HashMap<String, Vec<Lock>> {
+) -> (HashMap<String, Vec<Lock>>, usize) {
     // seed with concrete (non-opaque) acquired locks only; opaque locks can never
     // form a cycle, and propagating them (esp. truncated paths) never converges.
     let mut may: HashMap<String, HashSet<Lock>> = by_key
@@ -374,49 +418,63 @@ fn may_acquire(
         .map(|(k, s)| (k.clone(), s.acquires.iter().filter(|l| !l.is_opaque()).cloned().collect()))
         .collect();
     let mut keys: Vec<String> = by_key.keys().cloned().collect();
-    keys.sort(); // stable processing order -> reproducible saturation under MAY_CAP
-    let mut changed = true;
+    keys.sort(); // stable index order -> reproducible saturation under MAY_CAP
+
     let mut iters = 0;
-    while changed && iters < 25 {
-        changed = false;
-        iters += 1;
-        for k in &keys {
-            if may[k].len() >= MAY_CAP {
-                continue;
-            }
-            let s = &by_key[k];
-            let mut add: HashSet<Lock> = HashSet::new();
-            for (ci, call) in s.calls.iter().enumerate() {
-                if call.is_async {
-                    continue;
+    while iters < 25 {
+        // Jacobi round: each method's additions computed in parallel against the
+        // previous round's `may` (read-only), then applied deterministically.
+        let additions: Vec<(usize, Vec<Lock>)> = keys
+            .par_iter()
+            .enumerate()
+            .filter_map(|(ki, k)| {
+                if may[k].len() >= MAY_CAP {
+                    return None;
                 }
-                for callee in &resolved[k][ci] {
-                    let Some(set) = may.get(callee) else { continue };
-                    for cl in set {
-                        if let Some(sub) = subst_or_self(cl, &call.args) {
-                            if !sub.is_opaque() && !may[k].contains(&sub) {
-                                add.insert(sub);
+                let s = &by_key[k];
+                let mut add: HashSet<Lock> = HashSet::new();
+                for (ci, call) in s.calls.iter().enumerate() {
+                    if call.is_async {
+                        continue;
+                    }
+                    let Some(cands) = resolved.get(k).and_then(|v| v.get(ci)) else { continue };
+                    for callee in cands {
+                        let Some(set) = may.get(callee) else { continue };
+                        for cl in set {
+                            if let Some(sub) = subst_or_self(cl, &call.args) {
+                                if !sub.is_opaque() && !may[k].contains(&sub) {
+                                    add.insert(sub);
+                                }
                             }
                         }
                     }
                 }
-            }
-            if !add.is_empty() {
-                changed = true;
-                // deterministic order so the MAY_CAP truncation is reproducible.
-                let mut add: Vec<Lock> = add.into_iter().collect();
-                add.sort_by(|a, b| a.name().cmp(&b.name()));
-                let set = may.get_mut(k).unwrap();
-                for l in add {
-                    if set.len() >= MAY_CAP {
-                        break;
-                    }
-                    set.insert(l);
+                if add.is_empty() {
+                    None
+                } else {
+                    let mut v: Vec<Lock> = add.into_iter().collect();
+                    v.sort_by(|a, b| a.name().cmp(&b.name()));
+                    Some((ki, v))
                 }
+            })
+            .collect();
+        iters += 1;
+        if additions.is_empty() {
+            break;
+        }
+        let mut additions = additions;
+        additions.sort_by_key(|(ki, _)| *ki);
+        for (ki, v) in additions {
+            let set = may.get_mut(&keys[ki]).unwrap();
+            for l in v {
+                if set.len() >= MAY_CAP {
+                    break;
+                }
+                set.insert(l);
             }
         }
     }
-    may.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect()
+    (may.into_iter().map(|(k, v)| (k, v.into_iter().collect())).collect(), iters)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +484,7 @@ fn may_acquire(
 fn extract(m: &Method, value_summaries: &HashMap<String, Lock>) -> Summary {
     let mut s = Summary { key: m.key(), class: m.class.clone(), ..Default::default() };
     let mut regs: HashMap<Reg, Lock> = HashMap::new();
+    let mut alloc_ty: HashMap<String, String> = HashMap::new(); // alloc site -> type
     let mut held: Vec<Lock> = Vec::new();
     let mut last_ret: Option<Lock> = None;
     let mut returns: Vec<Option<Lock>> = Vec::new();
@@ -476,6 +535,7 @@ fn extract(m: &Method, value_summaries: &HashMap<String, Lock>) -> Summary {
             Op::NewInstance { dst, class } => {
                 let site = format!("{}+{:04x}", m.key(), insn.offset);
                 regs.insert(*dst, Lock::new(Root::Alloc(site.clone())));
+                alloc_ty.insert(site.clone(), class.clone());
                 s.allocs.push((site, class.clone()));
             }
             Op::Move { dst, src } => match regs.get(src).cloned() {
@@ -521,13 +581,13 @@ fn extract(m: &Method, value_summaries: &HashMap<String, Lock>) -> Summary {
                         }
                     }
                     Some(LockCall::AsyncSink) => {
-                        record_call(&mut s, &regs, inv, &held, line_at(insn.offset), true);
+                        record_call(&mut s, &regs, inv, &held, line_at(insn.offset), true, &alloc_ty);
                     }
                     None => {
                         last_ret = value_summaries.get(&inv.key()).and_then(|vs| {
                             subst_or_self(vs, &arg_vals(&regs, inv))
                         });
-                        record_call(&mut s, &regs, inv, &held, line_at(insn.offset), false);
+                        record_call(&mut s, &regs, inv, &held, line_at(insn.offset), false, &alloc_ty);
                     }
                 }
             }
@@ -564,9 +624,9 @@ fn arg_vals(regs: &HashMap<Reg, Lock>, inv: &Invoke) -> Vec<Option<Lock>> {
     inv.args.iter().map(|r| regs.get(r).cloned()).collect()
 }
 
-fn record_call(s: &mut Summary, regs: &HashMap<Reg, Lock>, inv: &Invoke, held: &[Lock], line: Option<u32>, is_async: bool) {
+fn record_call(s: &mut Summary, regs: &HashMap<Reg, Lock>, inv: &Invoke, held: &[Lock], line: Option<u32>, is_async: bool, alloc_ty: &HashMap<String, String>) {
     let recv_type = if matches!(inv.kind, InvokeKind::Virtual | InvokeKind::Interface) {
-        inv.args.first().and_then(|r| regs.get(r)).and_then(alloc_type)
+        inv.args.first().and_then(|r| regs.get(r)).and_then(|l| alloc_type(l, alloc_ty))
     } else {
         None
     };
@@ -583,13 +643,14 @@ fn record_call(s: &mut Summary, regs: &HashMap<Reg, Lock>, inv: &Invoke, held: &
     });
 }
 
-/// The concrete type behind an allocation-site value, if the path is the bare
-/// alloc (so dispatch can be refined to it). The site string encodes nothing
-/// about the type, so we keep type via the summary `allocs` table instead — here
-/// we only treat a bare `Alloc` root with no fields as a concrete receiver. Type
-/// is recovered in the global phase; this returns None and RTA handles dispatch.
-fn alloc_type(_l: &Lock) -> Option<String> {
-    None
+/// The concrete type of a receiver that is a bare, freshly-allocated object, so a
+/// virtual/interface call on it can be dispatched exactly to that type instead of
+/// going through RTA. Only a bare `Alloc` root (no field deref) is a known object.
+fn alloc_type(l: &Lock, alloc_ty: &HashMap<String, String>) -> Option<String> {
+    match &l.root {
+        Root::Alloc(site) if l.fields.is_empty() => alloc_ty.get(site).cloned(),
+        _ => None,
+    }
 }
 
 fn acquire(s: &mut Summary, m: &Method, held: &mut Vec<Lock>, lock: Lock, line: Option<u32>, nonblocking: bool) {
