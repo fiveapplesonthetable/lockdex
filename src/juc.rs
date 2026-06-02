@@ -40,8 +40,12 @@ pub struct SinkConfig {
 }
 
 impl SinkConfig {
-    fn hit(set: &std::collections::HashSet<String>, simple: &str, name: &str) -> bool {
-        set.contains(name) || set.contains(&format!("{simple}.{name}"))
+    /// Match a sink entry against a call. An entry may be the fully-qualified
+    /// `pkg.Class.method`, the simple `Class.method`, or a bare `method`.
+    fn hit(set: &std::collections::HashSet<String>, class: &str, simple: &str, name: &str) -> bool {
+        set.contains(name)
+            || set.contains(&format!("{simple}.{name}"))
+            || set.contains(&format!("{class}.{name}"))
     }
 }
 
@@ -67,8 +71,8 @@ pub fn classify(class: &str, name: &str, cfg: &SinkConfig) -> Option<LockCall> {
     ) || (name == "execute" && simple.contains("Executor"))
         || (name == "post" && simple.contains("Handler"));
     // user add/remove overlays the defaults.
-    let async_sink = (builtin_async || SinkConfig::hit(&cfg.add, simple, name))
-        && !SinkConfig::hit(&cfg.remove, simple, name);
+    let async_sink = (builtin_async || SinkConfig::hit(&cfg.add, class, simple, name))
+        && !SinkConfig::hit(&cfg.remove, class, simple, name);
     if async_sink {
         return Some(LockCall::AsyncSink);
     }

@@ -229,12 +229,14 @@ held when work is posted is not treated as held when it runs. The built-ins cove
 `Thread.start`, `AsyncTask.execute`, etc. — but only by name, so a project's own
 dispatcher won't be recognized.
 
-`--async-sinks FILE` adjusts the list on top of the built-ins. One entry per line,
-`SimpleClass.method` or a bare `method`; a leading `-` disables a built-in; `#`
-comments:
+`--async-sinks FILE` adjusts the list on top of the built-ins. One entry per line.
+An entry may be a fully-qualified `pkg.Class.method`, a simple `Class.method`, or
+a bare `method` (matches that method on any class). A leading `-` disables a
+built-in; `#` for comments:
 
 ```
-# treat our own dispatcher as async
+# treat our own dispatcher as async — FQN (precise) or simple name both work
+com.example.os.MyDispatcher.runLater
 MyDispatcher.runLater
 postToBackground
 # ...and stop treating AsyncTask.execute as async
