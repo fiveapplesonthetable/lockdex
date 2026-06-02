@@ -269,6 +269,12 @@ for `go tool pprof` / Perfetto. With `--src-root` the holding site is inlined fr
 source. Locks with no cross-thread identity (a fresh `new` object, an unresolved
 monitor) are excluded — only shared lock identities can be a cross-process hazard.
 
+To focus on one service or lock, pass `--class <substr>` (matches the holding
+method, e.g. `--class ActivityManagerService`) and/or `--lock <substr>` (matches the
+lock name, e.g. `--lock mProcLock`). A filtered run emits the source and a diagram
+for *every* matching site, not just the top ones — so it's the way to get the full
+set of images for a given service or lock.
+
 Output is deterministic, so comparing two builds needs no special mode: diff the
 `binder.json`, or use `go tool pprof -diff_base=old.pb.gz new.pb.gz` to see which
 hold-sites a change added or removed.

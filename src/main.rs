@@ -77,6 +77,12 @@ enum Cmd {
         /// which boundaries to report: out | in | both
         #[arg(long, default_value = "both")]
         direction: String,
+        /// only findings whose lock name contains this (emits all their diagrams)
+        #[arg(long)]
+        lock: Option<String>,
+        /// only findings whose holder/entry contains this, e.g. a service name
+        #[arg(long)]
+        class: Option<String>,
         /// source checkout to inline holding sites from (optional)
         #[arg(long)]
         src_root: Option<PathBuf>,
@@ -183,22 +189,24 @@ fn main() -> Result<()> {
                 print!("{txt}");
             }
         }
-        Cmd::Binder { input, direction, src_root, out_dir, scope, async_dispatch } => {
+        Cmd::Binder { input, direction, lock, class, src_root, out_dir, scope, async_dispatch } => {
             let Some(dir) = binder::Direction::parse(&direction) else {
                 anyhow::bail!("--direction must be `out`, `in`, or `both`");
             };
+            let filter = binder::Filter { lock, class };
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
             eprintln!("[lockdex] parsed {} classes", dex.classes.len());
             let async_cfg = load_async_dispatch(async_dispatch.as_deref())?;
             let an = analyze::analyze(&dex, &async_cfg);
-            let md = binder::report(&an, dir, src_root.as_deref(), out_dir.as_deref());
+            let md = binder::report(&an, dir, &filter, src_root.as_deref(), out_dir.as_deref());
+            let report = binder::filtered(&an.binder, &filter);
             if let Some(d) = &out_dir {
                 std::fs::create_dir_all(d)?;
                 std::fs::write(d.join("binder.md"), &md)?;
-                std::fs::write(d.join("binder.json"), serde_json::to_string_pretty(&an.binder)?)?;
-                let me = binder::method_edges(&an, dir);
+                std::fs::write(d.join("binder.json"), serde_json::to_string_pretty(&report)?)?;
+                let me = binder::method_edges(&an, dir, &filter);
                 if !me.is_empty() {
                     export::write_file(&d.join("binder.pb.gz"), &export::pprof_method_edges(&me))?;
                     export::write_file(&d.join("binder.hprof"), &export::hprof_method_edges(&me))?;
@@ -209,9 +217,9 @@ fn main() -> Result<()> {
                 );
                 println!(
                     "lockdex binder: {} outgoing hold-site(s), {} incoming entr(ies) ({} high-risk). See {}/binder.md",
-                    an.binder.outgoing.len(),
-                    an.binder.incoming.len(),
-                    an.binder.incoming.iter().filter(|f| f.high).count(),
+                    report.outgoing.len(),
+                    report.incoming.len(),
+                    report.incoming.iter().filter(|f| f.high).count(),
                     d.display()
                 );
             } else {
