@@ -273,10 +273,12 @@ produce encoded in its header comment. The harness compiles each to dex with
 tests/run_corpus.sh
 ```
 
-The corpus covers nested and interprocedural AB-BA, getter-aliased locks,
-two-instance aliasing, guard-protected non-deadlocks, async boundaries,
-`java.util.concurrent` locks, read/write locks, reentrancy, lambda capture, and
-try-lock.
+The corpus covers nested and interprocedural AB-BA, three-lock cycles,
+getter-aliased and constructor-parameter-aliased locks, a shared singleton lock
+split across fields, two-instance aliasing, guard-protected non-deadlocks, async
+boundaries, `java.util.concurrent` locks, read/write locks, reentrancy, lambda
+capture, try-lock, inheritance with override (RTA) dispatch, static-synchronized
+class locks, and instance-synchronized `this` monitors.
 
 ## Scope and limits
 
