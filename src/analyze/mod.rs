@@ -1,3 +1,17 @@
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Compositional lock-order analysis.
 //!
 //! Per-method extraction (parallel) records *raw* facts; a global phase builds an
@@ -18,6 +32,11 @@ mod extract;
 mod fixpoint;
 use callgraph::{build_supertypes, class_of_key, index_namesig, CallGraph, POLY_LIMIT};
 use fixpoint::may_acquire;
+
+/// A call-graph edge for export: (caller key, callee key, lock held across the call).
+type MethodEdge = (String, String, String);
+/// One method's contribution to the graph: lock-order edges, call edges, locks touched.
+type MethodParts = (Vec<Edge>, Vec<MethodEdge>, Vec<Lock>);
 
 #[derive(Debug, Clone)]
 pub struct Edge {
@@ -236,12 +255,12 @@ pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
     let tea = Instant::now();
     let mut asm_keys: Vec<&String> = by_key.keys().collect();
     asm_keys.sort();
-    let parts: Vec<(Vec<Edge>, Vec<(String, String, String)>, Vec<Lock>)> = asm_keys
+    let parts: Vec<MethodParts> = asm_keys
         .par_iter()
         .map(|k| assemble_one(k, &by_key[*k], &resolved, &may, &capture_map, &alias))
         .collect();
     let mut edges: Vec<Edge> = Vec::new();
-    let mut method_edges: Vec<(String, String, String)> = Vec::new();
+    let mut method_edges: Vec<MethodEdge> = Vec::new();
     let mut all_locks: HashSet<Lock> = HashSet::new();
     for (e, me, locks) in parts {
         edges.extend(e);
@@ -298,9 +317,9 @@ fn assemble_one(
     may: &HashMap<String, Vec<Lock>>,
     capture_map: &HashMap<String, HashMap<String, Lock>>,
     canon: &HashMap<String, Lock>,
-) -> (Vec<Edge>, Vec<(String, String, String)>, Vec<Lock>) {
+) -> MethodParts {
     let mut edges: Vec<Edge> = Vec::new();
-    let mut method_edges: Vec<(String, String, String)> = Vec::new();
+    let mut method_edges: Vec<MethodEdge> = Vec::new();
     let mut locks: Vec<Lock> = Vec::new();
 
     for e in &s.intra_edges {

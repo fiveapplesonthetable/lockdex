@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T08_RWLock.rwA.write corpus.T08_RWLock.rwB.write
-// MINSTAGE: 4
 package corpus;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.concurrent.locks.ReadWriteLock;

@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T03_GetterAlias.mLock corpus.T03_GetterAlias.B
-// MINSTAGE: 2
 package corpus;
 // getLock() trivially returns this.mLock. synchronized(getLock()) must resolve
 // to this.mLock (NOT a fresh opaque), so it can form an AB-BA with B.

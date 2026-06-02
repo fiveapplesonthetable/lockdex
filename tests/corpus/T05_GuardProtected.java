@@ -1,5 +1,4 @@
 // EXPECT: NO_DEADLOCK
-// MINSTAGE: 5
 package corpus;
 // Both orderings of A,B happen only while holding G. A common outer guard makes
 // the two acquisitions mutually exclusive -> not a real deadlock.

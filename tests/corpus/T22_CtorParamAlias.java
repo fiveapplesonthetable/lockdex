@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T22_CtorParamAlias.mShared corpus.T22_CtorParamAlias.B
-// MINSTAGE: 0
 package corpus;
 // Holder.mLock is the constructor argument — at the one construction site it is
 // mShared. Resolving that parameter alias reveals the real mShared <-> B inversion

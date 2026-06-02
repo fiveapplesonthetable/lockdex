@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T23_ThreeLockCycle.A corpus.T23_ThreeLockCycle.B corpus.T23_ThreeLockCycle.C
-// MINSTAGE: 0
 package corpus;
 // A genuine three-lock cycle: A->B, B->C, C->A. The SCC {A,B,C} is the deadlock.
 public class T23_ThreeLockCycle {

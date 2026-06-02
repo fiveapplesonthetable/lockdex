@@ -1,11 +1,21 @@
-//! Stage 0 bootstrap front-end: shell out to `dexdump -d` and parse its
-//! fully-decoded textual disassembly into our `Dex` model.
-//!
-//! This is deliberately a throwaway path (Stage 1 replaces it with native dex
-//! parsing) but it lets us validate the *analysis* — the hard, interesting part —
-//! without first fighting the dex binary format. `dexdump` already decodes
-//! instructions to a stable, readable form (`monitor-enter v0`,
-//! `iget-object v0, v1, Lcls;.f:Lt;`, `invoke-static {}, Lcls;.m:()V`).
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Dex front-end: shell out to `dexdump -d` and parse its fully-decoded textual
+//! disassembly into our [`Dex`] model. `dexdump` decodes instructions to a stable,
+//! readable form (`monitor-enter v0`, `iget-object v0, v1, Lcls;.f:Lt;`,
+//! `invoke-static {}, Lcls;.m:()V`), which this module parses line by line.
 
 use crate::model::*;
 use anyhow::{Context, Result};
@@ -278,10 +288,8 @@ fn parse_insn(body: &str) -> Op {
         "return-object" => Op::Return(reg(rest)),
         "return-void" | "return" | "return-wide" => Op::Return(None),
         _ if mnem.starts_with("invoke") => parse_invoke(mnem, rest),
-        // Anything writing a result we don't model: clear its dst so a stale lock
-        // value can't survive. We can't always know the dst cheaply, so only the
-        // common single-dst forms are handled; the rest are Other (safe: they
-        // don't define lock-typed registers in practice).
+        // Unmodeled opcode: in practice it never defines a lock-typed register, so
+        // treating it as opaque is safe (the dst-clearing forms are handled above).
         _ => Op::Other,
     }
 }

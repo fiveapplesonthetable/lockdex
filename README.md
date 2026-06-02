@@ -266,11 +266,19 @@ edges back. It is a list, so add or remove freely without rebuilding.
 ## Tests
 
 `tests/corpus/` holds small Java programs, each with the verdict it should
-produce encoded in its header comment. The harness compiles each to dex with
-`d8` and checks the analysis against the expected result:
+produce encoded in its header comment (`// EXPECT:` and `// CYCLE:`). Each fixture
+is committed alongside a prebuilt `.dex`, so the suite runs in-process with no Java
+toolchain:
 
 ```sh
-tests/run_corpus.sh
+cargo test
+```
+
+`dexdump` must be reachable (see Install). After adding or editing a fixture,
+rebuild the dex inputs (needs `javac` and `d8`):
+
+```sh
+cargo run --example regen_dex
 ```
 
 The corpus covers nested and interprocedural AB-BA, three-lock cycles,
@@ -295,3 +303,11 @@ reporting false deadlocks rather than toward completeness:
 - Native (JNI) monitors and cross-process Binder reentrancy are out of scope.
 
 Read every reported cycle against the source before changing any locking.
+
+## License
+
+Apache 2.0 — see [`LICENSE`](LICENSE). The crate is laid out as a library
+(`src/lib.rs`), a CLI binary (`src/main.rs`), and an in-process corpus test
+(`tests/corpus.rs`); an `Android.bp` is included so it can be hosted in an AOSP
+tree as `rust_library_host` / `rust_binary_host` / `rust_test_host` without
+restructuring.

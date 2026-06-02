@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T02_InterprocABBA.A corpus.T02_InterprocABBA.B
-// MINSTAGE: 0
 package corpus;
 // Hold A, call a helper that takes B; and hold B, call a helper that takes A.
 // The edge A->B / B->A only appears if interprocedural composition works.

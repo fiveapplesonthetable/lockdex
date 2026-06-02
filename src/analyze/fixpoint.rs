@@ -1,3 +1,17 @@
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! The mayAcquire fixpoint: transitive locks reachable through the call graph,
 //! computed in parallel Jacobi rounds with a per-method saturation cap.
 
@@ -27,7 +41,7 @@ pub(super) fn may_acquire(
     while iters < 25 {
         // Jacobi round: each method's additions computed in parallel against the
         // previous round's `may` (read-only), then applied deterministically.
-        let additions: Vec<(usize, Vec<Lock>)> = keys
+        let mut additions: Vec<(usize, Vec<Lock>)> = keys
             .par_iter()
             .enumerate()
             .filter_map(|(ki, k)| {
@@ -56,7 +70,7 @@ pub(super) fn may_acquire(
                     None
                 } else {
                     let mut v: Vec<Lock> = add.into_iter().collect();
-                    v.sort_by(|a, b| a.name().cmp(&b.name()));
+                    v.sort_by_cached_key(|l| l.name());
                     Some((ki, v))
                 }
             })
@@ -65,7 +79,6 @@ pub(super) fn may_acquire(
         if additions.is_empty() {
             break;
         }
-        let mut additions = additions;
         additions.sort_by_key(|(ki, _)| *ki);
         for (ki, v) in additions {
             let set = may.get_mut(&keys[ki]).unwrap();

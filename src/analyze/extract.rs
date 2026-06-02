@@ -1,3 +1,17 @@
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Per-method extraction: a single forward pass that resolves each acquire to a
 //! lock identity, tracks the held-lock stack, and records the method summary.
 
@@ -104,11 +118,11 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                     Some(LockCall::WriteView) => {
                         last_ret = inv.args.first().and_then(|r| regs.get(r)).map(|l| l.with_mode(Mode::Write));
                     }
-                    Some(LockCall::Acquire) | Some(LockCall::TryAcquire) => {
-                        let nb = matches!(juc::classify(&inv.class, &inv.name, cfg), Some(LockCall::TryAcquire));
+                    Some(call @ (LockCall::Acquire | LockCall::TryAcquire)) => {
+                        let nonblocking = matches!(call, LockCall::TryAcquire);
                         let lock = inv.args.first().and_then(|r| regs.get(r)).cloned()
                             .unwrap_or_else(|| Lock::new(Root::Opaque(format!("{}+{:04x}", m.key(), insn.offset))));
-                        acquire(&mut s, m, &mut held, lock, line_at(insn.offset), nb);
+                        acquire(&mut s, m, &mut held, lock, line_at(insn.offset), nonblocking);
                     }
                     Some(LockCall::Release) => {
                         if let Some(lock) = inv.args.first().and_then(|r| regs.get(r)).cloned() {

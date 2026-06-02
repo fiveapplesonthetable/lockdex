@@ -1,5 +1,4 @@
 // EXPECT: NO_DEADLOCK
-// MINSTAGE: 2
 package corpus;
 // a.mLock and b.mLock are different objects. a.foo() locks a.mLock then calls
 // b.bar() which locks b.mLock. Field-name identity would FALSELY merge them into

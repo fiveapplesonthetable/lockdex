@@ -1,5 +1,4 @@
 // EXPECT: NO_DEADLOCK
-// MINSTAGE: 4
 package corpus;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.Lock;

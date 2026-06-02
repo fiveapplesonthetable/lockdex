@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T19_Inheritance$Derived.mLock corpus.T19_Inheritance.B
-// MINSTAGE: 0
 package corpus;
 // The deadlock only exists if the override Derived.run() is dispatched through the
 // abstract Task.run() call in p2 (RTA over instantiated subtypes) — this is the

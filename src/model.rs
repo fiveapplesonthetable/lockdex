@@ -1,9 +1,23 @@
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Core data model: the parsed dex shape plus the abstract-lock identity.
 //!
-//! Stage 0 keeps lock identity deliberately simple (class-qualified field /
-//! static / class-const / this-monitor / alloc / distinct-opaque). Stage 2 makes
-//! it receiver-sensitive (access paths + alloc-site) to kill the two-instance
-//! false-merge. The `Lock` enum is shaped so that refinement is additive.
+//! A lock's identity is a [`Root`] (a class-qualified field, a static, a class
+//! constant, the `this` monitor, an allocation site, or a distinct opaque) plus a
+//! bounded access path. Opaque roots are never merged, so an unresolved lock can
+//! never fabricate a cycle.
 
 use serde::Serialize;
 use std::fmt;

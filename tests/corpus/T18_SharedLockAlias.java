@@ -1,5 +1,4 @@
 // EXPECT: NO_DEADLOCK
-// MINSTAGE: 0
 package corpus;
 // Leaf.mLock is assigned Core.getLock() in the constructor — it is the SAME
 // object as Core.mLock. coreOp(Core.mLock -> Leaf.mLock) and leafOp(Leaf.mLock ->

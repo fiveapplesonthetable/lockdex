@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T01_SimpleABBA.A corpus.T01_SimpleABBA.B
-// MINSTAGE: 0
 package corpus;
 // T01: classic AB-BA deadlock. Thread 1 takes A then B; thread 2 takes B then A.
 public class T01_SimpleABBA {

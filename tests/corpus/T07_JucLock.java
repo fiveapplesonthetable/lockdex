@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T07_JucLock.l1 corpus.T07_JucLock.l2
-// MINSTAGE: 4
 package corpus;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.locks.Lock;

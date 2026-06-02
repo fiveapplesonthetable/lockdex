@@ -1,6 +1,5 @@
 // EXPECT: DEADLOCK
 // CYCLE: corpus.T10_LambdaCapture.mLock corpus.T10_LambdaCapture.B
-// MINSTAGE: 2
 package corpus;
 // A Runnable captures this.mLock and locks it when run synchronously (run() is
 // called directly, not posted). Held under B in one path; reverse in the other.

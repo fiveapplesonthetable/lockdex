@@ -1,3 +1,17 @@
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 //! Human-readable + JSON + DOT reporting, with guard refinement applied.
 
 use crate::analyze::{Analysis, Edge};
@@ -80,7 +94,7 @@ pub fn build_json(an: &Analysis, g: &LockGraph) -> JsonReport {
     }
     // smallest cycles first: a 2–3 lock inversion is the actionable finding; the
     // large strongly-connected tangles go last.
-    cycles.sort_by(|a, b| a.locks.len().cmp(&b.locks.len()));
+    cycles.sort_by_key(|c| c.locks.len());
 
     JsonReport {
         node_count: g.nodes.len(),

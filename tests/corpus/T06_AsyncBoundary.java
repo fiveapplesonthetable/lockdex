@@ -1,5 +1,4 @@
 // EXPECT: NO_DEADLOCK
-// MINSTAGE: 3
 package corpus;
 import java.util.concurrent.Executor;
 // While holding A we post a runnable that takes B. A is NOT held when it runs,

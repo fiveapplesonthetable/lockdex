@@ -1,19 +1,22 @@
-//! lockdex — static lock-order / deadlock analyzer for AOSP, from DEX bytecode.
-// Staged build: some model fields/APIs are forward-declared for later stages.
-#![allow(dead_code)]
+// Copyright (C) 2026 The Android Open Source Project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-mod analyze;
-mod dexdump;
-mod export;
-mod graph;
-mod input;
-mod juc;
-mod model;
-mod report;
-mod verify;
+//! Command-line front-end for the `lockdex` library.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use lockdex::{analyze, export, graph, input, juc, report, verify};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
