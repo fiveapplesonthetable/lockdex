@@ -60,3 +60,12 @@ rust_test_host {
     rustlibs: ["liblockdex"],
     data: ["tests/corpus/*.dex"],
 }
+
+rust_test_host {
+    name: "lockdex_binder_test",
+    crate_name: "binder",
+    srcs: ["tests/binder.rs"],
+    edition: "2021",
+    rustlibs: ["liblockdex"],
+    data: ["tests/binder/*.dex"],
+}

@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lockdex::{analyze, export, graph, input, juc, report, verify};
+use lockdex::{analyze, binder, export, graph, input, juc, report, verify};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -41,11 +41,11 @@ enum Cmd {
         /// narrow a Soong out dir to jars whose name contains this (e.g. services)
         #[arg(long)]
         scope: Option<String>,
-        /// file of async-sink adjustments: `Class.method` to add, `-Class.method`
+        /// extra async-dispatch methods: `Class.method` to add, `-Class.method`
         /// to disable a built-in (one per line, `#` comments). Added on top of the
         /// defaults (Handler.post, Executor.execute, Thread.start, ...).
         #[arg(long)]
-        async_sinks: Option<PathBuf>,
+        async_dispatch: Option<PathBuf>,
     },
     /// Analyze, then pull the source for each candidate cycle and print a verdict.
     Verify {
@@ -66,16 +66,36 @@ enum Cmd {
         /// write the full bundle here: verify.txt + per-candidate dot/svg/pprof/hprof
         #[arg(long)]
         out_dir: Option<PathBuf>,
-        /// async-sink adjustments file (see `analyze --async-sinks`)
+        /// extra async-dispatch methods (see `analyze --async-dispatch`)
         #[arg(long)]
-        async_sinks: Option<PathBuf>,
+        async_dispatch: Option<PathBuf>,
+    },
+    /// Report locks held across Binder IPC boundaries (a cross-process hazard).
+    Binder {
+        /// .dex, .jar/.apk (multidex), or a Soong `out` directory
+        input: PathBuf,
+        /// which boundaries to report: out | in | both
+        #[arg(long, default_value = "both")]
+        direction: String,
+        /// source checkout to inline holding sites from (optional)
+        #[arg(long)]
+        src_root: Option<PathBuf>,
+        /// write binder.md + binder.json + per-finding dot/svg + pprof/hprof here
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// narrow a Soong out dir to jars whose name contains this
+        #[arg(long)]
+        scope: Option<String>,
+        /// extra async-dispatch methods (see `analyze --async-dispatch`)
+        #[arg(long)]
+        async_dispatch: Option<PathBuf>,
     },
 }
 
-/// Load `--async-sinks` adjustments: `Class.method` / `method` adds a sink,
+/// Load `--async-dispatch` adjustments: `Class.method` / `method` adds a point,
 /// a leading `-` disables a built-in. Blank lines and `#` comments are ignored.
-fn load_sinks(path: Option<&Path>) -> Result<juc::SinkConfig> {
-    let mut cfg = juc::SinkConfig::default();
+fn load_async_dispatch(path: Option<&Path>) -> Result<juc::AsyncConfig> {
+    let mut cfg = juc::AsyncConfig::default();
     let Some(p) = path else { return Ok(cfg) };
     let text = std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
     for line in text.lines() {
@@ -89,14 +109,14 @@ fn load_sinks(path: Option<&Path>) -> Result<juc::SinkConfig> {
             cfg.add.insert(s.trim_start_matches('+').trim().to_string());
         }
     }
-    eprintln!("[lockdex] async sinks: +{} -{} (on top of built-ins)", cfg.add.len(), cfg.remove.len());
+    eprintln!("[lockdex] async dispatch: +{} -{} (on top of built-ins)", cfg.add.len(), cfg.remove.len());
     Ok(cfg)
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Analyze { input, format, out_dir, scope, async_sinks } => {
+        Cmd::Analyze { input, format, out_dir, scope, async_dispatch } => {
             let t0 = std::time::Instant::now();
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
@@ -106,8 +126,8 @@ fn main() -> Result<()> {
                 dex.classes.len(),
                 t0.elapsed().as_secs_f64()
             );
-            let sinks = load_sinks(async_sinks.as_deref())?;
-            let an = analyze::analyze(&dex, &sinks);
+            let async_cfg = load_async_dispatch(async_dispatch.as_deref())?;
+            let an = analyze::analyze(&dex, &async_cfg);
             let g = graph::LockGraph::build(&an.edges, &an.all_locks);
             let rep = report::build_json(&an, &g);
             eprintln!(
@@ -135,13 +155,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Verify { input, src_root, max_locks, scope, out, out_dir, async_sinks } => {
+        Cmd::Verify { input, src_root, max_locks, scope, out, out_dir, async_dispatch } => {
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
             eprintln!("[lockdex] parsed {} classes", dex.classes.len());
-            let sinks = load_sinks(async_sinks.as_deref())?;
-            let an = analyze::analyze(&dex, &sinks);
+            let async_cfg = load_async_dispatch(async_dispatch.as_deref())?;
+            let an = analyze::analyze(&dex, &async_cfg);
             let g = graph::LockGraph::build(&an.edges, &an.all_locks);
             let rep = report::build_json(&an, &g);
             eprintln!(
@@ -161,6 +181,41 @@ fn main() -> Result<()> {
                 eprintln!("[lockdex] verification written to {}", p.display());
             } else {
                 print!("{txt}");
+            }
+        }
+        Cmd::Binder { input, direction, src_root, out_dir, scope, async_dispatch } => {
+            let Some(dir) = binder::Direction::parse(&direction) else {
+                anyhow::bail!("--direction must be `out`, `in`, or `both`");
+            };
+            let set = input::resolve(&input, scope.as_deref())?;
+            eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
+            let dex = input::parse_all(&set)?;
+            eprintln!("[lockdex] parsed {} classes", dex.classes.len());
+            let async_cfg = load_async_dispatch(async_dispatch.as_deref())?;
+            let an = analyze::analyze(&dex, &async_cfg);
+            let md = binder::report(&an, dir, src_root.as_deref(), out_dir.as_deref());
+            if let Some(d) = &out_dir {
+                std::fs::create_dir_all(d)?;
+                std::fs::write(d.join("binder.md"), &md)?;
+                std::fs::write(d.join("binder.json"), serde_json::to_string_pretty(&an.binder)?)?;
+                let me = binder::method_edges(&an, dir);
+                if !me.is_empty() {
+                    export::write_file(&d.join("binder.pb.gz"), &export::pprof_method_edges(&me))?;
+                    export::write_file(&d.join("binder.hprof"), &export::hprof_method_edges(&me))?;
+                }
+                eprintln!(
+                    "[lockdex] binder.md + binder.json + per-finding dot/svg + pprof/hprof written to {}",
+                    d.display()
+                );
+                println!(
+                    "lockdex binder: {} outgoing hold-site(s), {} incoming entr(ies) ({} high-risk). See {}/binder.md",
+                    an.binder.outgoing.len(),
+                    an.binder.incoming.len(),
+                    an.binder.incoming.iter().filter(|f| f.high).count(),
+                    d.display()
+                );
+            } else {
+                print!("{md}");
             }
         }
     }

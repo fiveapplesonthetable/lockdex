@@ -20,7 +20,7 @@ use crate::juc::{self, LockCall};
 use crate::model::*;
 use std::collections::HashMap;
 
-pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: &juc::SinkConfig) -> Summary {
+pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: &juc::AsyncConfig) -> Summary {
     let mut s = Summary { key: m.key(), class: m.class.clone(), ..Default::default() };
     let mut regs: HashMap<Reg, Lock> = HashMap::new();
     let mut alloc_ty: HashMap<String, String> = HashMap::new(); // alloc site -> type
@@ -131,7 +131,7 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                             held.pop();
                         }
                     }
-                    Some(LockCall::AsyncSink) => {
+                    Some(LockCall::AsyncDispatch) => {
                         record_call(&mut s, &regs, inv, &held, line_at(insn.offset), true, &alloc_ty);
                     }
                     None => {

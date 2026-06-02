@@ -21,6 +21,7 @@
 //! Soong out dir to the set of dex files to parse.
 
 pub mod analyze;
+pub mod binder;
 pub mod dexdump;
 pub mod export;
 pub mod graph;
@@ -28,15 +29,22 @@ pub mod input;
 pub mod juc;
 pub mod model;
 pub mod report;
+pub mod source;
 pub mod verify;
 
 use anyhow::Result;
 use std::path::Path;
 
-/// Parse one dex file and build its deadlock report: parse → analyze → graph → report.
-pub fn report_for_dex(path: &Path, sinks: &juc::SinkConfig) -> Result<report::JsonReport> {
+/// Parse one dex file and run the full analysis (lock-order edges, deadlock graph
+/// inputs, Binder boundaries, call-path index).
+pub fn analyze_dex(path: &Path, sinks: &juc::AsyncConfig) -> Result<analyze::Analysis> {
     let dex = dexdump::parse_dex(path)?;
-    let an = analyze::analyze(&dex, sinks);
+    Ok(analyze::analyze(&dex, sinks))
+}
+
+/// Parse one dex file and build its deadlock report: parse → analyze → graph → report.
+pub fn report_for_dex(path: &Path, sinks: &juc::AsyncConfig) -> Result<report::JsonReport> {
+    let an = analyze_dex(path, sinks)?;
     let g = graph::LockGraph::build(&an.edges, &an.all_locks);
     Ok(report::build_json(&an, &g))
 }

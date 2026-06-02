@@ -18,25 +18,36 @@
 //! is what `cargo test` analyzes, so the suite needs no Java toolchain to run. This
 //! helper rebuilds those dex: run it after adding or editing a fixture.
 //!
-//!     cargo run --example regen_dex
+//!     cargo run --example regen_dex            # both corpora
+//!     cargo run --example regen_dex -- binder  # just tests/binder
 //!
 //! Needs `javac` and AOSP `d8` (point at it with `$LOCKDEX_D8`, else it must be on
-//! `PATH`). Each fixture is compiled to a class file and dexed in a scratch dir.
+//! `PATH`). The deadlock corpus (`tests/corpus`) compiles each fixture alone; the
+//! Binder corpus (`tests/binder`) compiles each fixture with a fake `android.os`
+//! support package so it dexes without the Android SDK.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn run(cmd: &mut Command) {
-    let label = format!("{cmd:?}");
-    let status = cmd.status().unwrap_or_else(|e| panic!("spawn {label}: {e}"));
-    assert!(status.success(), "command failed: {label}");
+fn main() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let only = std::env::args().nth(1);
+    let want = |name: &str| only.as_deref().is_none_or(|o| o == name);
+
+    if want("corpus") {
+        regen(&root.join("tests/corpus"), &[]);
+    }
+    if want("binder") {
+        let support = java_files(&root.join("tests/binder/support"));
+        regen(&root.join("tests/binder"), &support);
+    }
 }
 
-fn main() {
-    let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
+/// Compile and dex every top-level `<name>.java` in `dir`, alongside `extra`
+/// sources, writing `<name>.dex` next to each fixture.
+fn regen(dir: &Path, extra: &[PathBuf]) {
     let d8 = std::env::var("LOCKDEX_D8").unwrap_or_else(|_| "d8".to_string());
-
-    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(&corpus)
+    let mut fixtures: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("read corpus dir")
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.extension().is_some_and(|x| x == "java"))
@@ -49,8 +60,11 @@ fn main() {
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).expect("mkdir scratch");
 
-        run(Command::new("javac").arg("-d").arg(&scratch).arg(java));
-        let classes: Vec<PathBuf> = walk_classes(&scratch);
+        let mut javac = Command::new("javac");
+        javac.arg("-d").arg(&scratch).args(extra).arg(java);
+        run(&mut javac);
+
+        let classes = java_files_ext(&scratch, "class");
         run(Command::new(&d8).arg("--min-api").arg("26").arg("--output").arg(&scratch).args(&classes));
 
         std::fs::copy(scratch.join("classes.dex"), java.with_extension("dex")).expect("copy dex");
@@ -59,15 +73,27 @@ fn main() {
     }
 }
 
-fn walk_classes(dir: &Path) -> Vec<PathBuf> {
+fn run(cmd: &mut Command) {
+    let label = format!("{cmd:?}");
+    let status = cmd.status().unwrap_or_else(|e| panic!("spawn {label}: {e}"));
+    assert!(status.success(), "command failed: {label}");
+}
+
+fn java_files(dir: &Path) -> Vec<PathBuf> {
+    java_files_ext(dir, "java")
+}
+
+fn java_files_ext(dir: &Path, ext: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).expect("read scratch").flatten() {
+    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    for entry in rd.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            out.extend(walk_classes(&p));
-        } else if p.extension().is_some_and(|x| x == "class") {
+            out.extend(java_files_ext(&p, ext));
+        } else if p.extension().is_some_and(|x| x == ext) {
             out.push(p);
         }
     }
+    out.sort();
     out
 }

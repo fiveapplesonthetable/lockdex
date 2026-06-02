@@ -13,6 +13,10 @@ No annotations (`@GuardedBy` is not needed), no instrumented build, no runtime
 trace. One dex is the whole program for analysis purposes, so lock identity and
 the call graph are resolved across the entire component.
 
+`lockdex binder` runs a related query on the same data: locks held across Binder
+IPC boundaries — a cross-process hazard rather than a same-process cycle. See
+[Locks across Binder IPC](#locks-across-binder-ipc).
+
 See [`docs/FINDINGS.md`](docs/FINDINGS.md) for example output — candidate
 lock-order inversions found in `system_server`, each with a diagram and the call
 path on both sides (e.g. `UserController.mLock ⇄ UserManagerService.mUsersLock`).
@@ -234,7 +238,42 @@ hierarchies. Candidates are then filtered:
 
 What remains is reported, smallest (most actionable) cycles first.
 
-## Tuning the async list
+## Locks across Binder IPC
+
+`lockdex binder` is a separate query over the same data. It is *not* deadlock
+detection: it flags places where a lock is held while a thread crosses a process
+boundary. The peer process is outside the graph, so this is a cross-process
+deadlock / priority-inversion / ANR hazard rather than a provable cycle.
+
+```sh
+lockdex binder "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+    --src-root "$ANDROID_BUILD_TOP" --out-dir ./binder-out
+```
+
+Two directions, selectable with `--direction out|in|both` (default `both`):
+
+- **Outgoing** — a lock held at a call site that (transitively) reaches
+  `IBinder.transact`. The report groups these by lock and ranks them by how often
+  each lock is held across IPC, so the global locks rise to the top (on
+  `system_server`, `ActivityTaskManagerService.mGlobalLock` leads by a wide margin).
+- **Incoming** — a public method of a Binder server (a class extending
+  `android.os.Binder`) that acquires a lock a remote caller can therefore block on.
+  An entry that *also* holds a lock across its own outgoing transaction is flagged
+  **high-risk** — that is the nested pattern that genuinely deadlocks across
+  processes.
+
+`--out-dir` writes `binder.md` (the report), a call-path diagram per finding
+(`*.dot` and, with Graphviz, `*.svg`) showing the chain from the lock holder to the
+Binder boundary, `binder.json` (the full data), and `binder.pb.gz` / `binder.hprof`
+for `go tool pprof` / Perfetto. With `--src-root` the holding site is inlined from
+source. Locks with no cross-thread identity (a fresh `new` object, an unresolved
+monitor) are excluded — only shared lock identities can be a cross-process hazard.
+
+Output is deterministic, so comparing two builds needs no special mode: diff the
+`binder.json`, or use `go tool pprof -diff_base=old.pb.gz new.pb.gz` to see which
+hold-sites a change added or removed.
+
+## Tuning the async-dispatch list
 
 Held locks are *severed* at calls that defer work to another thread, so a lock
 held when work is posted is not treated as held when it runs. The built-ins cover
@@ -242,9 +281,9 @@ held when work is posted is not treated as held when it runs. The built-ins cove
 `Thread.start`, `AsyncTask.execute`, etc. — but only by name, so a project's own
 dispatcher won't be recognized.
 
-`--async-sinks FILE` adjusts the list on top of the built-ins. One entry per line.
-An entry may be a fully-qualified `pkg.Class.method`, a simple `Class.method`, or
-a bare `method` (matches that method on any class). A leading `-` disables a
+`--async-dispatch FILE` adjusts the list on top of the built-ins. One entry per
+line. An entry may be a fully-qualified `pkg.Class.method`, a simple `Class.method`,
+or a bare `method` (matches that method on any class). A leading `-` disables a
 built-in; `#` for comments:
 
 ```
@@ -257,10 +296,10 @@ postToBackground
 ```
 
 ```sh
-lockdex analyze "$ANDROID_BUILD_TOP/out" --out-dir ./out --async-sinks ./async-sinks.txt
+lockdex analyze "$ANDROID_BUILD_TOP/out" --out-dir ./out --async-dispatch ./async.txt
 ```
 
-Adding a sink removes false edges (a post that isn't followed); removing one adds
+Adding a point removes false edges (a post that isn't followed); removing one adds
 edges back. It is a list, so add or remove freely without rebuilding.
 
 ## Tests
@@ -287,6 +326,13 @@ split across fields, two-instance aliasing, guard-protected non-deadlocks, async
 boundaries, `java.util.concurrent` locks, read/write locks, reentrancy, lambda
 capture, try-lock, inheritance with override (RTA) dispatch, static-synchronized
 class locks, and instance-synchronized `this` monitors.
+
+`tests/binder/` is a second corpus for the Binder analysis, with `// OUT:`,
+`// NO_OUT:`, `// IN:`, and `// HIGH:` contracts (lock held across an outgoing
+transaction, the negative, an incoming entry that takes a lock, and the high-risk
+nested case). Those fixtures compile against a fake `android.os` package under
+`tests/binder/support` so they dex without the Android SDK; regenerate them with
+`cargo run --example regen_dex -- binder`.
 
 ## Scope and limits
 

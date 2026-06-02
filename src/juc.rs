@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Recognition of `java.util.concurrent.locks` operations and async sinks by
-//! their (class, method) signature. Monitor enter/exit come from real dex
-//! `monitor-*` instructions; juc locks are ordinary method calls we translate.
+//! Recognition of `java.util.concurrent.locks` operations and async-dispatch
+//! points by their (class, method) signature. Monitor enter/exit come from real
+//! dex `monitor-*` instructions; juc locks are ordinary method calls we translate.
 
 /// What an invoke means for lock analysis, if anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,9 +29,9 @@ pub enum LockCall {
     ReadView,
     /// `ReadWriteLock.writeLock()` — returns the receiver tagged write-mode.
     WriteView,
-    /// async sink (`Handler.post`, `Executor.execute`, `Thread.start`, ...) —
-    /// any lambda/Runnable argument runs detached, so held locks are severed.
-    AsyncSink,
+    /// async-dispatch point (`Handler.post`, `Executor.execute`, `Thread.start`,
+    /// ...) — a lambda/Runnable argument runs detached, so held locks are severed.
+    AsyncDispatch,
 }
 
 fn is_lock_type(class: &str) -> bool {
@@ -44,17 +44,17 @@ fn is_lock_type(class: &str) -> bool {
     ) || class.contains("locks.")
 }
 
-/// User adjustments to the async-sink list, loaded from `--async-sinks FILE`.
-/// Each entry is `SimpleClass.method` or a bare `method`; `add` makes something a
-/// sink, `remove` disables a built-in. Both are additive to the defaults.
+/// User adjustments to the async-dispatch list, loaded from `--async-dispatch FILE`.
+/// Each entry is `SimpleClass.method` or a bare `method`; `add` treats a call as an
+/// async-dispatch point, `remove` disables a built-in. Both overlay the defaults.
 #[derive(Default)]
-pub struct SinkConfig {
+pub struct AsyncConfig {
     pub add: std::collections::HashSet<String>,
     pub remove: std::collections::HashSet<String>,
 }
 
-impl SinkConfig {
-    /// Match a sink entry against a call. An entry may be the fully-qualified
+impl AsyncConfig {
+    /// Match an entry against a call. An entry may be the fully-qualified
     /// `pkg.Class.method`, the simple `Class.method`, or a bare `method`.
     fn hit(set: &std::collections::HashSet<String>, class: &str, simple: &str, name: &str) -> bool {
         set.contains(name)
@@ -63,10 +63,10 @@ impl SinkConfig {
     }
 }
 
-pub fn classify(class: &str, name: &str, cfg: &SinkConfig) -> Option<LockCall> {
+pub fn classify(class: &str, name: &str, cfg: &AsyncConfig) -> Option<LockCall> {
     let simple = class.rsplit('.').next().unwrap_or(class);
 
-    // --- async sinks: anything that defers a Runnable/Message to run later ---
+    // --- async dispatch: anything that defers a Runnable/Message to run later ---
     let builtin_async = matches!(
         (simple, name),
         ("Handler", "post")
@@ -85,10 +85,10 @@ pub fn classify(class: &str, name: &str, cfg: &SinkConfig) -> Option<LockCall> {
     ) || (name == "execute" && simple.contains("Executor"))
         || (name == "post" && simple.contains("Handler"));
     // user add/remove overlays the defaults.
-    let async_sink = (builtin_async || SinkConfig::hit(&cfg.add, class, simple, name))
-        && !SinkConfig::hit(&cfg.remove, class, simple, name);
-    if async_sink {
-        return Some(LockCall::AsyncSink);
+    let is_dispatch = (builtin_async || AsyncConfig::hit(&cfg.add, class, simple, name))
+        && !AsyncConfig::hit(&cfg.remove, class, simple, name);
+    if is_dispatch {
+        return Some(LockCall::AsyncDispatch);
     }
 
     // --- ReadWriteLock views ---

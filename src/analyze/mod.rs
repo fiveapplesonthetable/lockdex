@@ -27,9 +27,11 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+mod binder;
 mod callgraph;
 mod extract;
 mod fixpoint;
+pub use binder::{BinderReport, IncomingFinding, OutgoingFinding};
 use callgraph::{build_supertypes, class_of_key, index_namesig, CallGraph, POLY_LIMIT};
 use fixpoint::may_acquire;
 
@@ -103,6 +105,9 @@ pub struct Analysis {
     pub method_edges: Vec<(String, String, String)>,
     /// call graph + reachability, for `verify` to show the path of an edge.
     pub paths: PathIndex,
+    /// locks held across Binder IPC boundaries (a cross-process hazard, distinct
+    /// from same-process deadlock cycles).
+    pub binder: BinderReport,
 }
 
 /// Enough of the call graph to reconstruct, for an order edge `A -> B`, the
@@ -161,7 +166,7 @@ impl PathIndex {
     }
 }
 
-pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
+pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
     let t = Instant::now();
     let methods: Vec<&Method> = dex.classes.iter().flat_map(|c| c.methods.iter()).collect();
     let supertypes = build_supertypes(dex);
@@ -306,7 +311,15 @@ pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
         .collect();
     let paths = PathIndex { callees, may: may_canon, direct };
 
-    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths }
+    // --- binder IPC boundaries (locks across a cross-process call) ------------
+    let tb = Instant::now();
+    let binder = binder::compute(dex, &cg.supertypes, &by_key, &resolved, &paths, &alias);
+    eprintln!(
+        "[lockdex] binder boundaries: {} outgoing hold-sites, {} incoming entries in {:.1}s",
+        binder.outgoing.len(), binder.incoming.len(), tb.elapsed().as_secs_f64()
+    );
+
+    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths, binder }
 }
 
 /// Assemble one method's contribution to the lock-order graph (pure / parallel).

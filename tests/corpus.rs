@@ -24,7 +24,7 @@
 //! discoverable (set `$LOCKDEX_DEXDUMP` or rely on the AOSP host path). Regenerate
 //! the dex after editing a fixture with `cargo run --example regen_dex`.
 
-use lockdex::juc::SinkConfig;
+use lockdex::juc::AsyncConfig;
 use lockdex::report::JsonReport;
 use std::path::{Path, PathBuf};
 
@@ -63,7 +63,7 @@ fn fixtures() -> Vec<PathBuf> {
 fn corpus_contracts() {
     let fixtures = fixtures();
     assert!(!fixtures.is_empty(), "no .java fixtures found");
-    let sinks = SinkConfig::default();
+    let async_cfg = AsyncConfig::default();
 
     let mut failures = Vec::new();
     for java in &fixtures {
@@ -76,7 +76,7 @@ fn corpus_contracts() {
         let dex = java.with_extension("dex");
         assert!(dex.exists(), "{name}: missing {} — run `cargo run --example regen_dex`", dex.display());
 
-        let rep = lockdex::report_for_dex(&dex, &sinks).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        let rep = lockdex::report_for_dex(&dex, &async_cfg).unwrap_or_else(|e| panic!("{name}: {e:#}"));
         if !ok(&expect, &want, &rep) {
             let got: Vec<&Vec<String>> = rep.cycles.iter().map(|c| &c.locks).collect();
             failures.push(format!("{name}: expect={expect} cycle={want:?} got={got:?}"));
