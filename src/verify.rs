@@ -122,18 +122,24 @@ fn candidate_method_edges(c: &CycleReport, paths: &crate::analyze::PathIndex) ->
     out
 }
 
-/// One candidate cycle as a Graphviz DAG: lock nodes (red boxes) joined by the
-/// actual call path of each order edge (held-in → calls… → acquires). The two
-/// edges share the lock nodes, so the AB-BA loop is visible.
+/// One candidate cycle as a Graphviz DAG: lock nodes (red) joined by the actual
+/// call path of each order edge (held → … → acquires). Top-to-bottom layout, so
+/// the two paths form a readable loop between the shared lock nodes rather than a
+/// wide horizontal strip.
 fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
     use std::fmt::Write as _;
     let mut s = String::from(
-        "digraph cycle {\n  rankdir=LR; node [fontsize=10];\n  edge [fontsize=9];\n",
+        "digraph cycle {\n  \
+         rankdir=TB; bgcolor=\"white\";\n  \
+         graph [nodesep=0.35, ranksep=0.5];\n  \
+         node [fontname=\"Helvetica\", fontsize=11];\n  \
+         edge [fontname=\"Helvetica\", fontsize=9, color=\"#64748b\", arrowsize=0.8];\n",
     );
     for l in &c.locks {
         let _ = writeln!(
             s,
-            "  \"{}\" [shape=box,style=filled,fillcolor=\"#ffd6d6\",label=\"{}\"];",
+            "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#fee2e2\", \
+             color=\"#dc2626\", penwidth=2, fontsize=13, label=\"{}\"];",
             esc(l), esc(&short_lock(l))
         );
     }
@@ -144,18 +150,31 @@ fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
             Some(p) if !p.is_empty() => {
                 let ids: Vec<String> = p.iter().map(|m| format!("m::{m}")).collect();
                 for (i, m) in p.iter().enumerate() {
-                    let _ = writeln!(s, "  \"{}\" [shape=ellipse,label=\"{}\"];", esc(&ids[i]), esc(&short_method(m)));
+                    let _ = writeln!(
+                        s,
+                        "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#eef2ff\", \
+                         color=\"#a5b4fc\", label=\"{}\"];",
+                        esc(&ids[i]), esc(&short_method(m))
+                    );
                 }
-                let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"held in\",color=red,fontcolor=red];", esc(&e.from), esc(&ids[0]));
+                // first edge: "holds" (red); intermediate calls: plain arrows;
+                // last edge: "acquires" (red).
+                let _ = writeln!(
+                    s, "  \"{}\" -> \"{}\" [label=\" holds\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];",
+                    esc(&e.from), esc(&ids[0])
+                );
                 for w in ids.windows(2) {
-                    let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"calls\"];", esc(&w[0]), esc(&w[1]));
+                    let _ = writeln!(s, "  \"{}\" -> \"{}\";", esc(&w[0]), esc(&w[1]));
                 }
-                let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"acquires\",color=red,fontcolor=red];", esc(ids.last().unwrap()), esc(&e.to));
+                let _ = writeln!(
+                    s, "  \"{}\" -> \"{}\" [label=\" acquires\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];",
+                    esc(ids.last().unwrap()), esc(&e.to)
+                );
             }
             _ => {
                 let _ = writeln!(
                     s,
-                    "  \"{}\" -> \"{}\" [label=\"holds → acquires [{}x]\",color=red,fontcolor=red,style=dashed];",
+                    "  \"{}\" -> \"{}\" [label=\" holds → acquires [{}x]\", color=\"#dc2626\", fontcolor=\"#dc2626\", style=dashed, penwidth=1.6];",
                     esc(&e.from), esc(&e.to), e.count
                 );
             }

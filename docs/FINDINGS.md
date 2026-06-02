@@ -18,7 +18,7 @@ concurrently; that is checked per finding, not assumed.
 
 ### 1. `LockSettingsService.mSeparateChallengeLock` ⇄ `mSpManager`
 
-![](findings/cand04.png)
+![](findings/cand04.svg)
 
 `LockSettingsService` declares a canonical order in a class comment:
 `mSeparateChallengeLock -> mSpManager` (`LockSettingsService.java:262-263`). One
@@ -44,7 +44,7 @@ needs `mSeparateChallengeLock` inside that block — before entering
 
 ### 2. `RemoteTaskStore.mRemoteDeviceTaskLists` ⇄ `mRemoteTaskListeners`
 
-![](findings/cand06.png)
+![](findings/cand06.svg)
 
 Two monitors in one class, taken in both orders, with no `@GuardedBy` or ordering
 comment anywhere in the file — the nesting discipline is implicit and the code
@@ -70,7 +70,7 @@ lock is the robust option for a class this small.
 
 ### 3. `OneTimePermissionUserManager.mLock` ⇄ `PackageInactivityListener.mInnerLock`
 
-![](findings/cand08.png)
+![](findings/cand08.svg)
 
 The manager-wide `mLock` guards the uid→listener map (`@GuardedBy("mLock")`,
 `:98`); the per-listener `mInnerLock` guards that listener's alarm/uid-observer
@@ -95,7 +95,7 @@ first) so it matches the `onReceive` side.
 
 ### 4. `BatteryController.mLock` ⇄ `LocalBluetoothBatteryManager.mBroadcastReceiver`
 
-![](findings/cand03.png)
+![](findings/cand03.svg)
 
 `BatteryController`'s class javadoc notes it is touched from Binder threads, the
 UEventObserver thread, and its own Handler. One lock is a `BroadcastReceiver`
@@ -121,7 +121,7 @@ before calling the listener that takes `mLock`.
 
 ### 5. `UserController.mLock` ⇄ `UserManagerService.mUsersLock`
 
-![](findings/cand01.png)
+![](findings/cand01.svg)
 
 Two service monitors across the `am`/`pm` boundary: `UserController.mLock` guards
 started-user state, `UserManagerService.mUsersLock` guards the user list. No
@@ -150,7 +150,7 @@ of the `mLock` region. Either break is sufficient.
 
 ### `BatteryStatsService.mStats` ⇄ `SYSTEM_CLOCK` (`BatteryHistoryStepDetailsProvider.mClock`)
 
-![](findings/cand12.png)
+![](findings/cand12.svg)
 
 `mClock` is `Clock.SYSTEM_CLOCK`, a process-global singleton shared into the
 step-details provider — so the 3-lock SCC is really a two-lock pair, `mStats` vs.
@@ -166,7 +166,7 @@ settles it.
 
 ### `ThermalManagerService.mLock` ⇄ `ThermalHalWrapper.mHalLock`
 
-![](findings/cand16.png)
+![](findings/cand16.svg)
 
 Distinct monitors. `mLock → mHalLock` runs once at boot (`onActivityManagerReady`,
 `:253` → `connectToHal`, `:1413`); `mHalLock → mLock` runs in the HAL death
