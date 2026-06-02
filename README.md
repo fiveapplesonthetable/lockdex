@@ -13,6 +13,10 @@ No annotations (`@GuardedBy` is not needed), no instrumented build, no runtime
 trace. One dex is the whole program for analysis purposes, so lock identity and
 the call graph are resolved across the entire component.
 
+See [`docs/FINDINGS.md`](docs/FINDINGS.md) for example output — candidate
+lock-order inversions found in `system_server`, each with a diagram and the call
+path on both sides (e.g. `UserController.mLock ⇄ UserManagerService.mUsersLock`).
+
 ## Install
 
 ```sh
