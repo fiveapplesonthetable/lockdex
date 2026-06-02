@@ -1,6 +1,6 @@
 # Findings — lock-order analysis of `system_server`
 
-`lockdex` flagged 20 candidate lock-order cycles on a build's `services.jar`;
+`lockdex` flagged 17 candidate lock-order cycles on a build's `services.jar`;
 `lockdex verify` traced each to source. Each was then read against AOSP
 `frameworks/base`: call paths followed, locks checked for object identity,
 `@GuardedBy`/threading annotations and any documented lock ordering accounted for.
@@ -150,7 +150,7 @@ of the `mLock` region. Either break is sufficient.
 
 ### `BatteryStatsService.mStats` ⇄ `SYSTEM_CLOCK` (`BatteryHistoryStepDetailsProvider.mClock`)
 
-![](findings/cand12.svg)
+![](findings/cand10.svg)
 
 `mClock` is `Clock.SYSTEM_CLOCK`, a process-global singleton shared into the
 step-details provider — so the 3-lock SCC is really a two-lock pair, `mStats` vs.
@@ -166,7 +166,7 @@ settles it.
 
 ### `ThermalManagerService.mLock` ⇄ `ThermalHalWrapper.mHalLock`
 
-![](findings/cand16.svg)
+![](findings/cand14.svg)
 
 Distinct monitors. `mLock → mHalLock` runs once at boot (`onActivityManagerReady`,
 `:253` → `connectToHal`, `:1413`); `mHalLock → mLock` runs in the HAL death
@@ -181,26 +181,11 @@ nest.
 
 ---
 
-## Surfaced by the tool, set aside on review
-
-Reported, then dismissed. Most hit the documented limitation: lock identity is
-keyed by the field's declaring class, so two fields that alias **one** `Object`
-(shared via a getter) read as two locks. A couple follow a documented total order;
-a couple have the back-edge severed by an async hop.
-
-| candidate | why it's not a deadlock |
-|---|---|
-| `HdmiControlService.mLock` ⇄ `HdmiLocalDevice.mLock` | same object — `mLock = service.getServiceLock()`; reentrant, not AB-BA |
-| `PinnedSliceState.mLock` ⇄ `SliceManagerService.mLock` | same object — `mLock = mService.getLock()` |
-| `JobSchedulerService.mLock` ⇄ `JobServiceContext.mLock` ⇄ `StateController.mLock` | one shared lock — all `= service.getLock()` (the global scheduler lock) |
-| `LocationTimeZoneProvider/Controller/Proxy.mSharedLock` | one shared lock — all `= threadingDomain.getLockObject()`, pinned to one thread |
-| `MockableLocationProvider.mOwnerLock` ⇄ `ListenerMultiplexer.mMultiplexerLock` ⇄ … | `mOwnerLock` **is** `mMultiplexerLock`; the remaining real arc is unreachable (null-listener guard during construct-then-install) |
-| `AudioService.mSettingsLock`/`mHdmiClientLock`/`mVolumeStateLock` | documented total order `mSettingsLock ⊃ mHdmiClientLock ⊃ mVolumeStateLock`; the closing edge is a reentrant re-lock under `mSettingsLock` |
-| `AudioDeviceBroker.mDeviceStateLock`/`mDevicesLock`/`mBluetoothAudioStateLock` | documented hierarchy (`mDeviceStateLock` outermost), single `BrokerHandler` thread; reverse edges are reentrant `@GuardedBy("mDeviceStateLock")` re-locks |
-| `DisplayPowerController.mLock` ⇄ `DisplayBrightnessController.mLock` | back-edge severed: `switchMode(sendUpdate=false)` never re-enters DPC while DBC's lock is held |
-| `DeviceIdleController.this` ⇄ `AlarmManagerService.mLock` | reverse edges severed: a `REPORT_ALARMS_ACTIVE` Handler hop and an explicit "must not be called with mLock held" contract (+ `holdsLock` wtf assert) |
-| `RemotePrintService.mLock` ⇄ `UserState.mLock` | the A→B path is spurious (re-enters its own lock); only the one-directional dump path is real |
-
-The first four rows are the main failure mode: a singleton lock passed around by
-reference reads as several locks. lockdex does not invent locks; it splits one
-monitor into several, and the source read collapses them back.
+The remaining candidates are not deadlocks: documented-order nestings
+(`AudioService`, `AudioDeviceBroker`, both with an explicit lock hierarchy) or
+async-severed back-edges (`Display`, `DeviceIdle`, `location`) — reentrant or
+unreachable. The most common false positive — a singleton lock stored under
+several field names (`mLock = service.getLock()`) — is resolved automatically:
+lockdex collapsed 2,700+ such aliases on this build, so the `Hdmi`, `Slice`,
+`JobScheduler`, and time-zone "cycles" that earlier reviews caught no longer
+appear.

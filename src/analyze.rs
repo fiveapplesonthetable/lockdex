@@ -63,6 +63,10 @@ struct Summary {
     alloc_inits: Vec<(String, String, Vec<Option<Lock>>)>,
     /// if this method is a `<init>`, captured fields: field -> formal it stores.
     ctor_captures: Vec<(String, u32)>,
+    /// lock-field aliases learned from a `<init>`: `Class.field` is assigned a
+    /// lock that lives elsewhere (`this.mLock = service.getLock()`), so the two
+    /// name one object. Used to collapse a singleton lock split across fields.
+    field_aliases: Vec<(String, Lock)>,
 }
 
 pub struct Analysis {
@@ -160,6 +164,51 @@ pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
         by_key.values().flat_map(|s| s.allocs.iter().map(|(_, t)| t.clone())).collect();
     let ctor_captures = index_ctor_captures(&by_key);
     let capture_map = build_capture_map(&by_key, &ctor_captures);
+    // lock-field aliases: `Class.field` -> the shared lock it actually names,
+    // learned from how the field is assigned. Two sources:
+    //   (a) direct, in the field's `<init>`: `this.f = service.getLock()` / another
+    //       field / a static (recorded as `field_aliases`);
+    //   (b) constructor parameter: `this.f = param_i`, resolved to the actual
+    //       argument across all construction sites.
+    // A field assigned different objects at different sites is left distinct
+    // (sound). This collapses a singleton lock handed to several classes.
+    let alias: HashMap<String, Lock> = {
+        let mut seen: HashMap<String, Option<Lock>> = HashMap::new();
+        let note = |key: String, v: Option<Lock>, seen: &mut HashMap<String, Option<Lock>>| {
+            match (seen.get(&key), &v) {
+                (None, _) => { seen.insert(key, v); }
+                (Some(None), _) => {}                          // already ambiguous
+                (Some(Some(e)), Some(nv)) if e == nv => {}     // consistent
+                _ => { seen.insert(key, None); }               // conflict -> distinct
+            }
+        };
+        // (a) direct assignments
+        for s in by_key.values() {
+            for (k, v) in &s.field_aliases {
+                note(k.clone(), Some(v.clone()), &mut seen);
+            }
+        }
+        // (b) constructor-parameter assignments, resolved at construction sites
+        for s in by_key.values() {
+            for (site, ctor_key, args) in &s.alloc_inits {
+                let _ = site;
+                let Some(caps) = ctor_captures.get(ctor_key) else { continue };
+                let cclass = class_of_key(ctor_key);
+                for (field, formal) in caps {
+                    let key = format!("{cclass}.{field}");
+                    let arg = args.get(*formal as usize).and_then(|o| o.clone());
+                    let v = arg.filter(|v| {
+                        matches!(v.root, Root::Recv(_) | Root::Static(_))
+                            && !v.fields.is_empty()
+                            && v.name() != key
+                    });
+                    note(key, v, &mut seen);
+                }
+            }
+        }
+        seen.into_iter().filter_map(|(k, v)| v.map(|l| (k, l))).collect()
+    };
+    eprintln!("[lockdex] {} lock-field aliases resolved", alias.len());
     let cg = CallGraph { methods_by_namesig, instantiated, supertypes };
 
     let tcg = Instant::now();
@@ -183,7 +232,7 @@ pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
     asm_keys.sort();
     let parts: Vec<(Vec<Edge>, Vec<(String, String, String)>, Vec<Lock>)> = asm_keys
         .par_iter()
-        .map(|k| assemble_one(k, &by_key[*k], &resolved, &may, &capture_map))
+        .map(|k| assemble_one(k, &by_key[*k], &resolved, &may, &capture_map, &alias))
         .collect();
     let mut edges: Vec<Edge> = Vec::new();
     let mut method_edges: Vec<(String, String, String)> = Vec::new();
@@ -222,11 +271,15 @@ pub fn analyze(dex: &Dex, cfg: &juc::SinkConfig) -> Analysis {
             .acquires
             .iter()
             .filter(|l| !l.is_opaque())
-            .map(|l| ground(l, &s.class, k).name())
+            .map(|l| canonicalize(&ground(l, &s.class, k), &alias).name())
             .collect();
         direct.insert(k.clone(), d);
     }
-    let paths = PathIndex { callees, may, direct };
+    let may_canon: HashMap<String, Vec<Lock>> = may
+        .into_iter()
+        .map(|(k, v)| (k, v.iter().map(|l| canonicalize(l, &alias)).collect()))
+        .collect();
+    let paths = PathIndex { callees, may: may_canon, direct };
 
     Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths }
 }
@@ -238,23 +291,24 @@ fn assemble_one(
     resolved: &HashMap<String, Vec<Vec<String>>>,
     may: &HashMap<String, Vec<Lock>>,
     capture_map: &HashMap<String, HashMap<String, Lock>>,
+    canon: &HashMap<String, Lock>,
 ) -> (Vec<Edge>, Vec<(String, String, String)>, Vec<Lock>) {
     let mut edges: Vec<Edge> = Vec::new();
     let mut method_edges: Vec<(String, String, String)> = Vec::new();
     let mut locks: Vec<Lock> = Vec::new();
 
     for e in &s.intra_edges {
-        let from = resolve_lock(&e.from, s, capture_map);
-        let to = resolve_lock(&e.to, s, capture_map);
+        let from = resolve_lock(&e.from, s, capture_map, canon);
+        let to = resolve_lock(&e.to, s, capture_map, canon);
         locks.push(from.clone());
         locks.push(to.clone());
         if from != to && !from.is_opaque() && !to.is_opaque() {
-            let guard = e.guard.iter().map(|g| resolve_lock(g, s, capture_map)).collect();
+            let guard = e.guard.iter().map(|g| resolve_lock(g, s, capture_map, canon)).collect();
             edges.push(Edge { from, to, guard, ..e.clone() });
         }
     }
     for l in &s.acquires {
-        locks.push(resolve_lock(&ground(l, &s.class, k), s, capture_map));
+        locks.push(resolve_lock(&ground(l, &s.class, k), s, capture_map, canon));
     }
     let rk = resolved.get(k);
     for (ci, call) in s.calls.iter().enumerate() {
@@ -262,7 +316,7 @@ fn assemble_one(
             continue;
         }
         let callees: &[String] = rk.and_then(|v| v.get(ci)).map(Vec::as_slice).unwrap_or(&[]);
-        let held: Vec<Lock> = call.held.iter().map(|h| resolve_lock(h, s, capture_map)).collect();
+        let held: Vec<Lock> = call.held.iter().map(|h| resolve_lock(h, s, capture_map, canon)).collect();
         if let Some(inner) = held.last() {
             for callee in callees {
                 method_edges.push((k.to_string(), inner.name(), callee.clone()));
@@ -272,7 +326,7 @@ fn assemble_one(
             let Some(callee_may) = may.get(callee) else { continue };
             for cl in callee_may {
                 let Some(sub) = subst_or_self(cl, &call.args) else { continue };
-                let g = resolve_lock(&ground(&sub, &s.class, k), s, capture_map);
+                let g = resolve_lock(&ground(&sub, &s.class, k), s, capture_map, canon);
                 locks.push(g.clone());
                 for h in &held {
                     if h != &g && !h.is_opaque() && !g.is_opaque() {
@@ -457,7 +511,12 @@ fn build_capture_map(
 
 /// Rewrite a lock whose access path passes through a captured lambda field
 /// (`new@site.f$0.mLock` -> `<captured value>.mLock`), then ground it.
-fn resolve_lock(lock: &Lock, s: &Summary, capture_map: &HashMap<String, HashMap<String, Lock>>) -> Lock {
+fn resolve_lock(
+    lock: &Lock,
+    s: &Summary,
+    capture_map: &HashMap<String, HashMap<String, Lock>>,
+    canon: &HashMap<String, Lock>,
+) -> Lock {
     let mut cur = lock.clone();
     for _ in 0..MAX_AP {
         let Root::Alloc(site) = &cur.root else { break };
@@ -468,7 +527,27 @@ fn resolve_lock(lock: &Lock, s: &Summary, capture_map: &HashMap<String, HashMap<
         let rest = cur.fields[1..].to_vec();
         cur = cap.append(&rest, cur.mode);
     }
-    ground(&cur, &s.class, &s.key)
+    canonicalize(&ground(&cur, &s.class, &s.key), canon)
+}
+
+/// Follow lock-field aliases: a field assigned a shared lock is canonicalized to
+/// that lock's identity, so a singleton lock split across fields collapses to one.
+fn canonicalize(lock: &Lock, canon: &HashMap<String, Lock>) -> Lock {
+    if canon.is_empty() {
+        return lock.clone();
+    }
+    let mut cur = lock.clone();
+    for _ in 0..6 {
+        if !matches!(cur.root, Root::Recv(_) | Root::Static(_)) {
+            break;
+        }
+        let base = Lock { mode: Mode::Plain, ..cur.clone() }.name();
+        match canon.get(&base) {
+            Some(t) => cur = t.with_mode(cur.mode),
+            None => break,
+        }
+    }
+    cur
 }
 
 // ---------------------------------------------------------------------------
@@ -606,13 +685,25 @@ fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: &juc::SinkC
                 let _ = base;
                 regs.insert(*dst, Lock::field(Root::Recv(class.clone()), field.clone()));
             }
-            Op::Iput { src, base, class: _, field } => {
-                // lambda capture: in a <init>, `iput pSrc, this, f` captures the formal.
+            Op::Iput { src, base, class, field } => {
                 if is_ctor {
+                    // lambda capture: `iput pSrc, this, f` captures the formal.
                     if let Some(Root::Param(i)) = regs.get(src).map(|l| l.root.clone()) {
                         s.ctor_captures.push((field.clone(), i));
                     } else if regs.get(src).map(|l| matches!(l.root, Root::This)).unwrap_or(false) {
                         s.ctor_captures.push((field.clone(), 0));
+                    }
+                    // lock-field alias: `this.f = <a lock that lives elsewhere>`
+                    // (e.g. service.getLock(), already inlined to a concrete
+                    // field/static lock in the source register). Records that
+                    // `class.field` is the same object as that lock.
+                    if let Some(v) = regs.get(src) {
+                        if matches!(v.root, Root::Recv(_) | Root::Static(_)) && !v.fields.is_empty() {
+                            let key = format!("{}.{}", class, field);
+                            if v.name() != key {
+                                s.field_aliases.push((key, v.clone()));
+                            }
+                        }
                     }
                 }
                 let _ = base;
