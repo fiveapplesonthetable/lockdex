@@ -127,7 +127,6 @@ fn candidate_method_edges(c: &CycleReport, paths: &crate::analyze::PathIndex) ->
 /// the two paths form a readable loop between the shared lock nodes rather than a
 /// wide horizontal strip.
 fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
-    use std::fmt::Write as _;
     let mut s = String::from(
         "digraph cycle {\n  \
          rankdir=TB; bgcolor=\"white\";\n  \
@@ -135,12 +134,22 @@ fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
          node [fontname=\"Helvetica\", fontsize=11];\n  \
          edge [fontname=\"Helvetica\", fontsize=9, color=\"#64748b\", arrowsize=0.8];\n",
     );
+    // Accumulate unique node decls and edges. 3-lock cycles often route two order
+    // edges through the same call chain, which would otherwise draw the chain (and
+    // the "held in" arrow) twice; dedup keeps each arrow once.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let emit = |line: String, s: &mut String, seen: &mut std::collections::HashSet<String>| {
+        if seen.insert(line.clone()) {
+            s.push_str(&line);
+        }
+    };
     for l in &c.locks {
-        let _ = writeln!(
-            s,
-            "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#fee2e2\", \
-             color=\"#dc2626\", penwidth=2, fontsize=13, label=\"{}\"];",
-            esc(l), esc(&short_lock(l))
+        emit(
+            format!(
+                "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#fee2e2\", color=\"#dc2626\", penwidth=2, fontsize=13, label=\"{}\"];\n",
+                esc(l), esc(&short_lock(l))
+            ),
+            &mut s, &mut seen,
         );
     }
     for e in &c.edges {
@@ -150,32 +159,39 @@ fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
             Some(p) if !p.is_empty() => {
                 let ids: Vec<String> = p.iter().map(|m| format!("m::{m}")).collect();
                 for (i, m) in p.iter().enumerate() {
-                    let _ = writeln!(
-                        s,
-                        "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#eef2ff\", \
-                         color=\"#a5b4fc\", label=\"{}\"];",
-                        esc(&ids[i]), esc(&short_method(m))
+                    emit(
+                        format!(
+                            "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#eef2ff\", color=\"#a5b4fc\", label=\"{}\"];\n",
+                            esc(&ids[i]), esc(&short_method(m))
+                        ),
+                        &mut s, &mut seen,
                     );
                 }
-                // first edge: "holds" (red); intermediate calls: plain arrows;
-                // last edge: "acquires" (red).
-                let _ = writeln!(
-                    s, "  \"{}\" -> \"{}\" [label=\" held in\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];",
-                    esc(&e.from), esc(&ids[0])
+                emit(
+                    format!(
+                        "  \"{}\" -> \"{}\" [label=\" held in\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];\n",
+                        esc(&e.from), esc(&ids[0])
+                    ),
+                    &mut s, &mut seen,
                 );
                 for w in ids.windows(2) {
-                    let _ = writeln!(s, "  \"{}\" -> \"{}\";", esc(&w[0]), esc(&w[1]));
+                    emit(format!("  \"{}\" -> \"{}\";\n", esc(&w[0]), esc(&w[1])), &mut s, &mut seen);
                 }
-                let _ = writeln!(
-                    s, "  \"{}\" -> \"{}\" [label=\" acquires\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];",
-                    esc(ids.last().unwrap()), esc(&e.to)
+                emit(
+                    format!(
+                        "  \"{}\" -> \"{}\" [label=\" acquires\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];\n",
+                        esc(ids.last().unwrap()), esc(&e.to)
+                    ),
+                    &mut s, &mut seen,
                 );
             }
             _ => {
-                let _ = writeln!(
-                    s,
-                    "  \"{}\" -> \"{}\" [label=\" holds → acquires [{}x]\", color=\"#dc2626\", fontcolor=\"#dc2626\", style=dashed, penwidth=1.6];",
-                    esc(&e.from), esc(&e.to), e.count
+                emit(
+                    format!(
+                        "  \"{}\" -> \"{}\" [label=\" held → acquires [{}x]\", color=\"#dc2626\", fontcolor=\"#dc2626\", style=dashed, penwidth=1.6];\n",
+                        esc(&e.from), esc(&e.to), e.count
+                    ),
+                    &mut s, &mut seen,
                 );
             }
         }

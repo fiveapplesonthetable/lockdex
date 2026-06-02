@@ -39,7 +39,7 @@
 <title>com.android.server.audio.AudioService.mSettingsLock&#45;&gt;com.android.server.audio.AudioService.mHdmiClientLock</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" stroke-dasharray="5,2" d="M442.09,-337.09C468.62,-349.78 496,-370.11 496,-400 496,-712 496,-712 496,-712 496,-735.67 478.43,-755.7 460.9,-769.8"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="459.12,-767.63 454.47,-774.72 462.53,-772.08 459.12,-767.63"/>
-<text text-anchor="middle" x="546.5" y="-553.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds → acquires [1x]</text>
+<text text-anchor="middle" x="544.5" y="-553.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held → acquires [1x]</text>
 </g>
 <!-- m::com.android.server.audio.AudioService$AudioServiceInternal.updateRingerModeAffectedStreamsInternal:()V -->
 <g id="node6" class="node">
