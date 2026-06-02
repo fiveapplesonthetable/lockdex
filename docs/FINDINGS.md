@@ -1,19 +1,16 @@
 # Findings — lock-order analysis of `system_server`
 
 `lockdex` flagged 20 candidate lock-order cycles on a build's `services.jar`;
-`lockdex verify` traced each to source. The candidates below were then read by
-hand against AOSP `frameworks/base` — the call paths followed hop by hop, the
-locks checked for object identity, the `@GuardedBy`/threading annotations and any
-documented lock ordering taken into account.
+`lockdex verify` traced each to source. Each was then read against AOSP
+`frameworks/base`: call paths followed, locks checked for object identity,
+`@GuardedBy`/threading annotations and any documented lock ordering accounted for.
 
-This is the result of that review, not raw tool output. The confident inversions
-are listed first with a suggested fix; the candidates that did not survive review
-are listed at the end with the reason, because several are instructive about
-where static lock-order analysis over-reports.
+Confident inversions come first, each with a fix. The candidates that did not
+survive review are at the end with the reason.
 
 A reported cycle is a real pair of opposite-order acquisitions in the bytecode.
-Whether it can actually deadlock further requires the two sites to run on
-different threads concurrently — established per finding below, never assumed.
+Deadlock additionally needs the two sites to run on different threads
+concurrently; that is checked per finding, not assumed.
 
 ---
 
@@ -62,10 +59,9 @@ breaks it.
   (mRemoteDeviceTaskLists)` (`:52`). Reached over Binder
   (`ITaskContinuityManager.Stub.registerRemoteTaskListener`).
 
-Distinct objects, genuinely inverted, different threads. A Binder client
-registering a listener while a device disconnects is the textbook AB-BA.
-(`notifyListeners` even nests lock-2→lock-1 within one call chain, so the design
-is intrinsically order-mixed.)
+Distinct objects, different threads. A Binder client registering a listener while
+a device disconnects hits both orders. `notifyListeners` itself nests lock-2 then
+lock-1 in one chain, so the ordering is mixed by design.
 
 **Fix.** Establish one order and keep `getMostRecentTasks()` (which takes
 `mRemoteDeviceTaskLists`) out of any `synchronized (mRemoteTaskListeners)` block —
@@ -163,10 +159,10 @@ that clock monitor. Forward `mStats → mClock` is synchronous in
 (`BatteryHistoryStepDetailsProvider.java:106`), on a Binder thread; reverse
 `mClock → mStats` is on the `mHandler` thread inside the `requestUpdate`
 `if`-branch `postDelayed` runnable (`:99` → `AppProfiler.java:2181`). Distinct
-monitors, opposite order, different threads — genuine — but whether both orders
-are ever simultaneously in flight depends on which threads drive each, and the
-boot-gated `if`-branch (`!mSystemReady || mFirstUpdate`) muddies it. Confirm with
-lockdep/trace rather than dismiss.
+monitors, opposite order, different threads. Whether both orders are ever in
+flight at once depends on which threads drive each, and the boot-gated `if`-branch
+(`!mSystemReady || mFirstUpdate`) leaves that unproven. A lockdep/trace check
+settles it.
 
 ### `ThermalManagerService.mLock` ⇄ `ThermalHalWrapper.mHalLock`
 
@@ -187,10 +183,10 @@ nest.
 
 ## Surfaced by the tool, set aside on review
 
-These were reported and then dismissed. Most are the documented limitation —
-lock identity is keyed by the field's declaring class, so two fields that alias
-**one** `Object` (shared via a getter) look like two locks. A couple follow a
-documented total order; a couple have the back-edge severed by an async hop.
+Reported, then dismissed. Most hit the documented limitation: lock identity is
+keyed by the field's declaring class, so two fields that alias **one** `Object`
+(shared via a getter) read as two locks. A couple follow a documented total order;
+a couple have the back-edge severed by an async hop.
 
 | candidate | why it's not a deadlock |
 |---|---|
@@ -205,7 +201,6 @@ documented total order; a couple have the back-edge severed by an async hop.
 | `DeviceIdleController.this` ⇄ `AlarmManagerService.mLock` | reverse edges severed: a `REPORT_ALARMS_ACTIVE` Handler hop and an explicit "must not be called with mLock held" contract (+ `holdsLock` wtf assert) |
 | `RemotePrintService.mLock` ⇄ `UserState.mLock` | the A→B path is spurious (re-enters its own lock); only the one-directional dump path is real |
 
-The first four rows are the headline reason to run `verify` and read the source:
-field-granular lock identity over-reports exactly when a singleton lock is handed
-around by reference. lockdex never *invents* a lock, but it will split one shared
-monitor into several — which a short source read collapses.
+The first four rows are the main failure mode: a singleton lock passed around by
+reference reads as several locks. lockdex does not invent locks; it splits one
+monitor into several, and the source read collapses them back.
