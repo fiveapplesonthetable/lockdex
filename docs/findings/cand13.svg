@@ -26,7 +26,7 @@
 <title>com.android.server.companion.securechannel.SecureChannel.mHandshakeLock&#45;&gt;m::com.android.server.companion.securechannel.SecureChannel.exchangeHandshake:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M734.18,-1212.84C711.85,-1200.61 681.71,-1184.09 657.93,-1171.06"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="659.13,-1168.52 650.77,-1167.13 656.44,-1173.43 659.13,-1168.52"/>
-<text text-anchor="middle" x="714.5" y="-1187.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="717.5" y="-1187.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.companion.transport.CompanionTransportManager.mTransports -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.companion.transport.CompanionTransportManager.mTransports&#45;&gt;m::com.android.server.companion.transport.CompanionTransportManager.sendMessage:(I[B[I)Landroid/util/SparseArray;</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M244.06,-227.64C246.94,-216.66 250.71,-202.29 253.91,-190.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="256.7,-190.5 256.02,-182.05 251.28,-189.08 256.7,-190.5"/>
-<text text-anchor="middle" x="265.5" y="-202.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="268.5" y="-202.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.companion.transport.Transport.mRemoteIn -->
 <g id="node3" class="node">
@@ -56,22 +56,22 @@
 <!-- m::com.android.server.companion.transport.RawTransport.receiveMessage:()V -->
 <g id="node13" class="node">
 <title>m::com.android.server.companion.transport.RawTransport.receiveMessage:()V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M665,-930C665,-930 504,-930 504,-930 498,-930 492,-924 492,-918 492,-918 492,-906 492,-906 492,-900 498,-894 504,-894 504,-894 665,-894 665,-894 671,-894 677,-900 677,-906 677,-906 677,-918 677,-918 677,-924 671,-930 665,-930"/>
-<text text-anchor="middle" x="584.5" y="-909.2" font-family="Helvetica,sans-Serif" font-size="11.00">RawTransport.receiveMessage</text>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M663,-930C663,-930 502,-930 502,-930 496,-930 490,-924 490,-918 490,-918 490,-906 490,-906 490,-900 496,-894 502,-894 502,-894 663,-894 663,-894 669,-894 675,-900 675,-906 675,-906 675,-918 675,-918 675,-924 669,-930 663,-930"/>
+<text text-anchor="middle" x="582.5" y="-909.2" font-family="Helvetica,sans-Serif" font-size="11.00">RawTransport.receiveMessage</text>
 </g>
 <!-- com.android.server.companion.transport.Transport.mRemoteIn&#45;&gt;m::com.android.server.companion.transport.RawTransport.receiveMessage:()V -->
 <g id="edge12" class="edge">
 <title>com.android.server.companion.transport.Transport.mRemoteIn&#45;&gt;m::com.android.server.companion.transport.RawTransport.receiveMessage:()V</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M582.14,-975.9C575.46,-971.09 569.39,-965.17 565.5,-958 561.93,-951.43 563.07,-944.06 566.1,-937.2"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="568.64,-938.4 570,-930.04 563.72,-935.73 568.64,-938.4"/>
-<text text-anchor="middle" x="579.5" y="-950.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M577.86,-975.89C570.91,-971.14 564.63,-965.24 560.5,-958 556.77,-951.45 558.09,-944.18 561.46,-937.43"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="564,-938.64 565.79,-930.36 559.22,-935.72 564,-938.64"/>
+<text text-anchor="middle" x="577.5" y="-950.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.companion.transport.Transport.mRemoteIn&#45;&gt;m::com.android.server.companion.transport.RawTransport.receiveMessage:()V -->
 <g id="edge20" class="edge">
 <title>com.android.server.companion.transport.Transport.mRemoteIn&#45;&gt;m::com.android.server.companion.transport.RawTransport.receiveMessage:()V</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M611.91,-975.64C607.01,-964.45 600.57,-949.74 595.17,-937.39"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="597.73,-936.26 591.96,-930.05 592.6,-938.5 597.73,-936.26"/>
-<text text-anchor="middle" x="618.5" y="-950.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M611.47,-975.64C606.3,-964.45 599.49,-949.74 593.78,-937.39"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="596.29,-936.14 590.39,-930.05 591.2,-938.49 596.29,-936.14"/>
+<text text-anchor="middle" x="620.5" y="-950.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.companion.securechannel.SecureChannel.readMessage:(Lcom/android/server/companion/securechannel/SecureChannel$MessageType;)[B -->
 <g id="node5" class="node">
@@ -119,14 +119,14 @@
 <!-- m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V -->
 <g id="node9" class="node">
 <title>m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M665,-711C665,-711 504,-711 504,-711 498,-711 492,-705 492,-699 492,-699 492,-687 492,-687 492,-681 498,-675 504,-675 504,-675 665,-675 665,-675 671,-675 677,-681 677,-687 677,-687 677,-699 677,-699 677,-705 671,-711 665,-711"/>
-<text text-anchor="middle" x="584.5" y="-690.2" font-family="Helvetica,sans-Serif" font-size="11.00">SecureTransport.sendMessage</text>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M663,-711C663,-711 502,-711 502,-711 496,-711 490,-705 490,-699 490,-699 490,-687 490,-687 490,-681 496,-675 502,-675 502,-675 663,-675 663,-675 669,-675 675,-681 675,-687 675,-687 675,-699 675,-699 675,-705 669,-711 663,-711"/>
+<text text-anchor="middle" x="582.5" y="-690.2" font-family="Helvetica,sans-Serif" font-size="11.00">SecureTransport.sendMessage</text>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.sendAndForget:(I[B)Ljava/util/concurrent/Future;&#45;&gt;m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V -->
 <g id="edge7" class="edge">
 <title>m::com.android.server.companion.transport.Transport.sendAndForget:(I[B)Ljava/util/concurrent/Future;&#45;&gt;m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M399.9,-36.26C414.99,-49.12 431.5,-68.18 431.5,-90 431.5,-621 431.5,-621 431.5,-621 431.5,-650.57 455.3,-667.86 484.13,-677.95"/>
-<polygon fill="#64748b" stroke="#64748b" points="483.5,-680.69 491.97,-680.49 485.22,-675.36 483.5,-680.69"/>
+<path fill="none" stroke="#64748b" d="M399.9,-36.26C414.99,-49.12 431.5,-68.18 431.5,-90 431.5,-621 431.5,-621 431.5,-621 431.5,-649.85 454.36,-667 482.28,-677.19"/>
+<polygon fill="#64748b" stroke="#64748b" points="481.41,-679.84 489.88,-679.75 483.2,-674.54 481.41,-679.84"/>
 </g>
 <!-- m::com.android.server.companion.transport.SecureTransport.establishSecureConnection:()V -->
 <g id="node10" class="node">
@@ -137,14 +137,14 @@
 <!-- m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.establishSecureConnection:()V -->
 <g id="edge8" class="edge">
 <title>m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.establishSecureConnection:()V</title>
-<path fill="none" stroke="#64748b" d="M580.05,-674.81C580.55,-666.09 582.41,-655.34 585,-645.75"/>
-<polygon fill="#64748b" stroke="#64748b" points="587.7,-646.5 587.33,-638.03 582.33,-644.88 587.7,-646.5"/>
+<path fill="none" stroke="#64748b" d="M578.54,-674.81C579.28,-666.09 581.45,-655.34 584.3,-645.75"/>
+<polygon fill="#64748b" stroke="#64748b" points="587,-646.5 586.85,-638.03 581.68,-644.75 587,-646.5"/>
 </g>
 <!-- m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.establishSecureConnection:()V -->
 <g id="edge16" class="edge">
 <title>m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.establishSecureConnection:()V</title>
-<path fill="none" stroke="#64748b" d="M596.38,-674.81C599.39,-666.18 601.77,-655.56 602.93,-646.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="605.72,-646.24 603.61,-638.03 600.14,-645.76 605.72,-646.24"/>
+<path fill="none" stroke="#64748b" d="M594.86,-674.81C598.11,-666.18 600.8,-655.56 602.22,-646.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="605.01,-646.29 603.13,-638.03 599.45,-645.66 605.01,-646.29"/>
 </g>
 <!-- m::com.android.server.companion.transport.SecureTransport.close:()V -->
 <g id="node16" class="node">
@@ -155,8 +155,8 @@
 <!-- m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.close:()V -->
 <g id="edge24" class="edge">
 <title>m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.close:()V</title>
-<path fill="none" stroke="#64748b" d="M493.11,-674.97C466.97,-669.67 438.52,-663.5 412.5,-657 392.97,-652.12 371.88,-646.11 352.86,-640.4"/>
-<polygon fill="#64748b" stroke="#64748b" points="353.6,-637.7 345.13,-638.07 351.98,-643.06 353.6,-637.7"/>
+<path fill="none" stroke="#64748b" d="M492.18,-674.91C466.34,-669.62 438.22,-663.46 412.5,-657 392.98,-652.1 371.89,-646.08 352.87,-640.37"/>
+<polygon fill="#64748b" stroke="#64748b" points="353.6,-637.67 345.14,-638.04 351.98,-643.03 353.6,-637.67"/>
 </g>
 <!-- m::com.android.server.companion.securechannel.SecureChannel.establishSecureConnection:()V -->
 <g id="node11" class="node">
@@ -211,50 +211,50 @@
 <!-- m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V -->
 <g id="node14" class="node">
 <title>m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M651.5,-857C651.5,-857 517.5,-857 517.5,-857 511.5,-857 505.5,-851 505.5,-845 505.5,-845 505.5,-833 505.5,-833 505.5,-827 511.5,-821 517.5,-821 517.5,-821 651.5,-821 651.5,-821 657.5,-821 663.5,-827 663.5,-833 663.5,-833 663.5,-845 663.5,-845 663.5,-851 657.5,-857 651.5,-857"/>
-<text text-anchor="middle" x="584.5" y="-836.2" font-family="Helvetica,sans-Serif" font-size="11.00">Transport.handleMessage</text>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M649.5,-857C649.5,-857 515.5,-857 515.5,-857 509.5,-857 503.5,-851 503.5,-845 503.5,-845 503.5,-833 503.5,-833 503.5,-827 509.5,-821 515.5,-821 515.5,-821 649.5,-821 649.5,-821 655.5,-821 661.5,-827 661.5,-833 661.5,-833 661.5,-845 661.5,-845 661.5,-851 655.5,-857 649.5,-857"/>
+<text text-anchor="middle" x="582.5" y="-836.2" font-family="Helvetica,sans-Serif" font-size="11.00">Transport.handleMessage</text>
 </g>
 <!-- m::com.android.server.companion.transport.RawTransport.receiveMessage:()V&#45;&gt;m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V -->
 <g id="edge13" class="edge">
 <title>m::com.android.server.companion.transport.RawTransport.receiveMessage:()V&#45;&gt;m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M576.66,-893.81C575.46,-885.18 575.19,-874.56 575.86,-865.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="578.65,-865.27 576.68,-857.03 573.08,-864.7 578.65,-865.27"/>
+<path fill="none" stroke="#64748b" d="M574.66,-893.81C573.46,-885.18 573.19,-874.56 573.86,-865.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="576.65,-865.27 574.68,-857.03 571.08,-864.7 576.65,-865.27"/>
 </g>
 <!-- m::com.android.server.companion.transport.RawTransport.receiveMessage:()V&#45;&gt;m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V -->
 <g id="edge21" class="edge">
 <title>m::com.android.server.companion.transport.RawTransport.receiveMessage:()V&#45;&gt;m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M592.99,-893.81C594.3,-885.18 594.59,-874.56 593.86,-865.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="596.64,-864.67 592.97,-857.03 591.07,-865.29 596.64,-864.67"/>
+<path fill="none" stroke="#64748b" d="M590.99,-893.81C592.3,-885.18 592.59,-874.56 591.86,-865.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="594.64,-864.67 590.97,-857.03 589.07,-865.29 594.64,-864.67"/>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.processRequest:(II[B)V -->
 <g id="node15" class="node">
 <title>m::com.android.server.companion.transport.Transport.processRequest:(II[B)V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M652.5,-784C652.5,-784 516.5,-784 516.5,-784 510.5,-784 504.5,-778 504.5,-772 504.5,-772 504.5,-760 504.5,-760 504.5,-754 510.5,-748 516.5,-748 516.5,-748 652.5,-748 652.5,-748 658.5,-748 664.5,-754 664.5,-760 664.5,-760 664.5,-772 664.5,-772 664.5,-778 658.5,-784 652.5,-784"/>
-<text text-anchor="middle" x="584.5" y="-763.2" font-family="Helvetica,sans-Serif" font-size="11.00">Transport.processRequest</text>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M650.5,-784C650.5,-784 514.5,-784 514.5,-784 508.5,-784 502.5,-778 502.5,-772 502.5,-772 502.5,-760 502.5,-760 502.5,-754 508.5,-748 514.5,-748 514.5,-748 650.5,-748 650.5,-748 656.5,-748 662.5,-754 662.5,-760 662.5,-760 662.5,-772 662.5,-772 662.5,-778 656.5,-784 650.5,-784"/>
+<text text-anchor="middle" x="582.5" y="-763.2" font-family="Helvetica,sans-Serif" font-size="11.00">Transport.processRequest</text>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.Transport.processRequest:(II[B)V -->
 <g id="edge14" class="edge">
 <title>m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.Transport.processRequest:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M576.66,-820.81C575.46,-812.18 575.19,-801.56 575.86,-792.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="578.65,-792.27 576.68,-784.03 573.08,-791.7 578.65,-792.27"/>
+<path fill="none" stroke="#64748b" d="M574.66,-820.81C573.46,-812.18 573.19,-801.56 573.86,-792.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="576.65,-792.27 574.68,-784.03 571.08,-791.7 576.65,-792.27"/>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.Transport.processRequest:(II[B)V -->
 <g id="edge22" class="edge">
 <title>m::com.android.server.companion.transport.Transport.handleMessage:(II[B)V&#45;&gt;m::com.android.server.companion.transport.Transport.processRequest:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M592.99,-820.81C594.3,-812.18 594.59,-801.56 593.86,-792.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="596.64,-791.67 592.97,-784.03 591.07,-792.29 596.64,-791.67"/>
+<path fill="none" stroke="#64748b" d="M590.99,-820.81C592.3,-812.18 592.59,-801.56 591.86,-792.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="594.64,-791.67 590.97,-784.03 589.07,-792.29 594.64,-791.67"/>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.processRequest:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V -->
 <g id="edge15" class="edge">
 <title>m::com.android.server.companion.transport.Transport.processRequest:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M576.66,-747.81C575.46,-739.18 575.19,-728.56 575.86,-719.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="578.65,-719.27 576.68,-711.03 573.08,-718.7 578.65,-719.27"/>
+<path fill="none" stroke="#64748b" d="M574.66,-747.81C573.46,-739.18 573.19,-728.56 573.86,-719.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="576.65,-719.27 574.68,-711.03 571.08,-718.7 576.65,-719.27"/>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.processRequest:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V -->
 <g id="edge23" class="edge">
 <title>m::com.android.server.companion.transport.Transport.processRequest:(II[B)V&#45;&gt;m::com.android.server.companion.transport.SecureTransport.sendMessage:(II[B)V</title>
-<path fill="none" stroke="#64748b" d="M592.99,-747.81C594.3,-739.18 594.59,-728.56 593.86,-719.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="596.64,-718.67 592.97,-711.03 591.07,-719.29 596.64,-718.67"/>
+<path fill="none" stroke="#64748b" d="M590.99,-747.81C592.3,-739.18 592.59,-728.56 591.86,-719.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="594.64,-718.67 590.97,-711.03 589.07,-719.29 594.64,-718.67"/>
 </g>
 <!-- m::com.android.server.companion.transport.Transport.close:()V -->
 <g id="node17" class="node">

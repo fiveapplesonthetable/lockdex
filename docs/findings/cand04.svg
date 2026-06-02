@@ -26,7 +26,7 @@
 <title>com.android.server.locksettings.LockSettingsService.mSeparateChallengeLock&#45;&gt;m::com.android.server.locksettings.LockSettingsService.setLockCredential:(Lcom/android/internal/widget/LockscreenCredential;Lcom/android/internal/widget/LockscreenCredential;I)Z</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M273.79,-537.64C262.62,-526.03 247.79,-510.63 235.63,-498"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="237.48,-495.87 229.91,-492.05 233.44,-499.76 237.48,-495.87"/>
-<text text-anchor="middle" x="271.5" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="274.5" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.locksettings.LockSettingsService.mSpManager -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.locksettings.LockSettingsService.mSpManager&#45;&gt;m::com.android.server.locksettings.LockSettingsService$1.run:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M201.03,-300.64C198.83,-289.66 195.96,-275.29 193.52,-263.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="196.22,-262.35 191.91,-255.05 190.73,-263.44 196.22,-262.35"/>
-<text text-anchor="middle" x="211.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="214.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.locksettings.LockSettingsService.doVerifyCredential:(Lcom/android/internal/widget/LockscreenCredential;ILcom/android/internal/widget/ICheckCredentialProgressCallback;I)Lcom/android/internal/widget/VerifyCredentialResponse; -->
 <g id="node4" class="node">

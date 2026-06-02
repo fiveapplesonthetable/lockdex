@@ -26,7 +26,7 @@
 <title>com.android.server.location.listeners.ListenerMultiplexer.mMultiplexerLock&#45;&gt;m::com.android.server.location.provider.LocationProviderManager.setMockProvider:(Lcom/android/server/location/provider/MockLocationProvider;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M463.21,-692.64C451.2,-680.92 435.23,-665.34 422.22,-652.65"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="424.16,-650.63 416.48,-647.05 420.25,-654.64 424.16,-650.63"/>
-<text text-anchor="middle" x="459" y="-667.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="462" y="-667.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.location.provider.DelegateLocationProvider.mInitializationLock -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.location.provider.DelegateLocationProvider.mInitializationLock&#45;&gt;m::com.android.server.location.provider.DelegateLocationProvider.initializeDelegate:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M178.26,-81.64C192.75,-69.82 212.05,-54.06 227.67,-41.31"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="229.69,-43.28 234.11,-36.05 226.15,-38.94 229.69,-43.28"/>
-<text text-anchor="middle" x="226" y="-56.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="229" y="-56.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.location.provider.MockableLocationProvider.setMockProvider:(Lcom/android/server/location/provider/MockLocationProvider;)V -->
 <g id="node4" class="node">

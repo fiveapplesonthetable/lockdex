@@ -26,7 +26,7 @@
 <title>com.android.server.am.AppProfiler.mProcessCpuTracker&#45;&gt;m::com.android.server.am.AppProfiler.getAppProfileStatsForDebugging:(JI)Landroid/util/Pair;</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M346.47,-920.64C333.29,-908.92 315.76,-893.34 301.49,-880.65"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="303.02,-878.27 295.18,-875.05 299.3,-882.46 303.02,-878.27"/>
-<text text-anchor="middle" x="341" y="-895.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="344" y="-895.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.am.BatteryStatsService.mStats -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.am.BatteryStatsService.mStats&#45;&gt;m::com.android.server.am.BatteryStatsService.lambda$setBatteryState$95:(ZIIIIIIIIJJJJ)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M242.67,-683.64C236.66,-672.45 228.75,-657.74 222.11,-645.39"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="224.42,-643.77 218.16,-638.05 219.49,-646.42 224.42,-643.77"/>
-<text text-anchor="middle" x="248" y="-658.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="251" y="-658.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.power.stats.BatteryHistoryStepDetailsProvider.mClock -->
 <g id="node3" class="node">
@@ -62,16 +62,16 @@
 <!-- com.android.server.power.stats.BatteryHistoryStepDetailsProvider.mClock&#45;&gt;m::com.android.server.power.stats.BatteryHistoryStepDetailsProvider.lambda$requestUpdate$0:()V -->
 <g id="edge8" class="edge">
 <title>com.android.server.power.stats.BatteryHistoryStepDetailsProvider.mClock&#45;&gt;m::com.android.server.power.stats.BatteryHistoryStepDetailsProvider.lambda$requestUpdate$0:()V</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M175.56,-373.71C169.68,-368.79 164.31,-362.86 161,-356 157.91,-349.6 158.61,-342.41 160.89,-335.68"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="163.57,-336.53 164.16,-328.07 158.43,-334.31 163.57,-336.53"/>
-<text text-anchor="middle" x="175" y="-348.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M173.11,-373.67C167.02,-368.8 161.47,-362.91 158,-356 154.8,-349.62 155.69,-342.53 158.32,-335.9"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="161,-336.8 162.06,-328.4 155.99,-334.31 161,-336.8"/>
+<text text-anchor="middle" x="175" y="-348.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.power.stats.BatteryHistoryStepDetailsProvider.mClock&#45;&gt;m::com.android.server.power.stats.BatteryHistoryStepDetailsProvider.lambda$requestUpdate$0:()V -->
 <g id="edge15" class="edge">
 <title>com.android.server.power.stats.BatteryHistoryStepDetailsProvider.mClock&#45;&gt;m::com.android.server.power.stats.BatteryHistoryStepDetailsProvider.lambda$requestUpdate$0:()V</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M200.09,-373.77C197.58,-365.33 194.34,-355.06 191,-346 189.79,-342.72 188.44,-339.3 187.06,-335.94"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="189.53,-334.58 183.84,-328.3 184.37,-336.76 189.53,-334.58"/>
-<text text-anchor="middle" x="209" y="-348.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M201.75,-373.62C199.92,-365.15 197.32,-354.89 194,-346 192.7,-342.52 191.14,-338.94 189.49,-335.46"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="191.88,-333.98 185.8,-328.08 186.88,-336.49 191.88,-333.98"/>
+<text text-anchor="middle" x="215" y="-348.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.am.AppProfiler.updateCpuStatsNow:()V -->
 <g id="node5" class="node">

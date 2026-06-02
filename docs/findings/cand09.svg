@@ -26,7 +26,7 @@
 <title>com.android.server.print.PrintManagerService$PrintManagerImpl.mLock&#45;&gt;m::com.android.server.print.UserState.dump:(Lcom/android/internal/util/dump/DualDumpOutputStream;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M375,-537.64C367.52,-526.35 357.66,-511.46 349.42,-499.04"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="351.55,-497.17 344.8,-492.05 346.88,-500.27 351.55,-497.17"/>
-<text text-anchor="middle" x="377.5" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="380.5" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.print.RemotePrintService.mLock -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.print.RemotePrintService.mLock&#45;&gt;m::com.android.server.print.RemotePrintService$RemoteServiceConneciton.onServiceConnected:(Landroid/content/ComponentName;Landroid/os/IBinder;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M255.23,-300.64C244.34,-289.03 229.9,-273.63 218.06,-261"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="220,-258.97 212.48,-255.05 215.91,-262.8 220,-258.97"/>
-<text text-anchor="middle" x="252.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="255.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.print.RemotePrintService.dump:(Lcom/android/internal/util/dump/DualDumpOutputStream;)V -->
 <g id="node4" class="node">

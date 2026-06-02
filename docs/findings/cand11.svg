@@ -26,7 +26,7 @@
 <title>com.android.server.audio.AudioService.mHdmiClientLock&#45;&gt;m::com.android.server.audio.AudioService.adjustStreamVolume:(IIILandroid/media/AudioDeviceAttributes;Ljava/lang/String;Ljava/lang/String;IILjava/lang/String;ZI)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M409.29,-774.64C398.12,-763.03 383.29,-747.63 371.13,-735"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="372.98,-732.87 365.41,-729.05 368.94,-736.76 372.98,-732.87"/>
-<text text-anchor="middle" x="407" y="-749.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="410" y="-749.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.audio.AudioService.mSettingsLock -->
 <g id="node2" class="node">
@@ -52,7 +52,7 @@
 <title>com.android.server.audio.AudioService.mSettingsLock&#45;&gt;m::com.android.server.audio.AudioService$AudioServiceInternal.updateRingerModeAffectedStreamsInternal:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M393,-300.64C393,-289.66 393,-275.29 393,-263.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="395.8,-263.05 393,-255.05 390.2,-263.05 395.8,-263.05"/>
-<text text-anchor="middle" x="407" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="410" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.audio.AudioService.mVolumeStateLock -->
 <g id="node3" class="node">
@@ -71,7 +71,7 @@
 <title>com.android.server.audio.AudioService.mVolumeStateLock&#45;&gt;m::com.android.server.audio.AudioService$VolumeGroupState.applyAllVolumes:(Z)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M313,-537.64C313,-526.66 313,-512.29 313,-500.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="315.8,-500.05 313,-492.05 310.2,-500.05 315.8,-500.05"/>
-<text text-anchor="middle" x="327" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="330" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.audio.AudioService$VolumeStreamState.getIndex:(I)I -->
 <g id="node5" class="node">

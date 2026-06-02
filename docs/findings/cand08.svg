@@ -26,7 +26,7 @@
 <title>com.android.server.pm.permission.OneTimePermissionUserManager$PackageInactivityListener.mInnerLock&#45;&gt;m::com.android.server.pm.permission.OneTimePermissionUserManager$PackageInactivityListener.&lt;init&gt;:(Lcom/android/server/pm/permission/OneTimePermissionUserManager;ILjava/lang/String;IJJ)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M385.04,-464.84C365.64,-452.71 339.5,-436.37 318.73,-423.39"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="320.18,-421 311.91,-419.13 317.21,-425.75 320.18,-421"/>
-<text text-anchor="middle" x="370.5" y="-439.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="373.5" y="-439.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.pm.permission.OneTimePermissionUserManager.mLock -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.pm.permission.OneTimePermissionUserManager.mLock&#45;&gt;m::com.android.server.pm.permission.OneTimePermissionUserManager$1.onReceive:(Landroid/content/Context;Landroid/content/Intent;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M248.45,-227.64C249.69,-216.66 251.3,-202.29 252.68,-190.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="255.47,-190.31 253.58,-182.05 249.9,-189.69 255.47,-190.31"/>
-<text text-anchor="middle" x="266.5" y="-202.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="269.5" y="-202.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.pm.permission.OneTimePermissionUserManager$PackageInactivityListener.onPackageInactiveLocked:()V -->
 <g id="node4" class="node">

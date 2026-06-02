@@ -26,13 +26,13 @@
 <title>com.android.server.power.thermal.ThermalManagerService$TemperatureWatcher.mSamples&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$1.onThresholdChanged:(Landroid/hardware/thermal/TemperatureThreshold;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M553.97,-993.84C537.29,-981.92 514.91,-965.94 496.9,-953.07"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="498.12,-950.51 489.99,-948.13 494.87,-955.06 498.12,-950.51"/>
-<text text-anchor="middle" x="542" y="-968.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="545" y="-968.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock -->
 <g id="node2" class="node">
 <title>com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock</title>
-<path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M541,-647C541,-647 179,-647 179,-647 173,-647 167,-641 167,-635 167,-635 167,-623 167,-623 167,-617 173,-611 179,-611 179,-611 541,-611 541,-611 547,-611 553,-617 553,-623 553,-623 553,-635 553,-635 553,-641 547,-647 541,-647"/>
-<text text-anchor="middle" x="360" y="-625.6" font-family="Helvetica,sans-Serif" font-size="13.00">ThermalManagerService$ThermalHalWrapper.mHalLock</text>
+<path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M535,-647C535,-647 173,-647 173,-647 167,-647 161,-641 161,-635 161,-635 161,-623 161,-623 161,-617 167,-611 173,-611 173,-611 535,-611 535,-611 541,-611 547,-617 547,-623 547,-623 547,-635 547,-635 547,-641 541,-647 535,-647"/>
+<text text-anchor="middle" x="354" y="-625.6" font-family="Helvetica,sans-Serif" font-size="13.00">ThermalManagerService$ThermalHalWrapper.mHalLock</text>
 </g>
 <!-- m::com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied:(J)V -->
 <g id="node8" class="node">
@@ -43,16 +43,16 @@
 <!-- com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied:(J)V -->
 <g id="edge6" class="edge">
 <title>com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied:(J)V</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M374.32,-610.82C378.82,-605.23 383.73,-598.94 388,-593 392.7,-586.46 397.55,-579.19 401.89,-572.44"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="404.46,-573.62 406.39,-565.37 399.73,-570.62 404.46,-573.62"/>
-<text text-anchor="middle" x="408" y="-585.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M372.01,-610.82C377.39,-605.34 383.15,-599.1 388,-593 393.1,-586.59 398.12,-579.26 402.52,-572.4"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="405.15,-573.48 407.02,-565.21 400.4,-570.51 405.15,-573.48"/>
+<text text-anchor="middle" x="412" y="-585.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied:(J)V -->
 <g id="edge12" class="edge">
 <title>com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied:(J)V</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M352.78,-610.73C350.26,-601.9 349.12,-591.29 354,-583 356.97,-577.96 360.95,-573.59 365.48,-569.82"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="367.18,-572.04 371.95,-565.04 363.86,-567.54 367.18,-572.04"/>
-<text text-anchor="middle" x="368" y="-585.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M346.65,-610.65C344.1,-601.8 342.97,-591.19 348,-583 351.09,-577.96 355.16,-573.62 359.78,-569.89"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="361.5,-572.1 366.37,-565.17 358.24,-567.55 361.5,-572.1"/>
+<text text-anchor="middle" x="365" y="-585.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.power.thermal.ThermalManagerService.mLock -->
 <g id="node3" class="node">
@@ -71,7 +71,7 @@
 <title>com.android.server.power.thermal.ThermalManagerService.mLock&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService.onActivityManagerReady:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M399.44,-154.64C396.56,-143.66 392.79,-129.29 389.59,-117.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="392.22,-116.08 387.48,-109.05 386.8,-117.5 392.22,-116.08"/>
-<text text-anchor="middle" x="408" y="-129.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="411" y="-129.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.power.thermal.ThermalManagerService$TemperatureWatcher.getHeadroomCallbackDataLocked:()Lcom/android/server/power/thermal/ThermalManagerService$HeadroomCallbackData; -->
 <g id="node5" class="node">
@@ -100,21 +100,21 @@
 <!-- m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature:(I)F -->
 <g id="node7" class="node">
 <title>m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature:(I)F</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M591,-729C591,-729 189,-729 189,-729 183,-729 177,-723 177,-717 177,-717 177,-705 177,-705 177,-699 183,-693 189,-693 189,-693 591,-693 591,-693 597,-693 603,-699 603,-705 603,-705 603,-717 603,-717 603,-723 597,-729 591,-729"/>
-<text text-anchor="middle" x="390" y="-708.2" font-family="Helvetica,sans-Serif" font-size="11.00">ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature</text>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M590,-729C590,-729 188,-729 188,-729 182,-729 176,-723 176,-717 176,-717 176,-705 176,-705 176,-699 182,-693 188,-693 188,-693 590,-693 590,-693 596,-693 602,-699 602,-705 602,-705 602,-717 602,-717 602,-723 596,-729 590,-729"/>
+<text text-anchor="middle" x="389" y="-708.2" font-family="Helvetica,sans-Serif" font-size="11.00">ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature</text>
 </g>
 <!-- m::com.android.server.power.thermal.ThermalManagerService$TemperatureWatcher.getForecast:(I)F&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature:(I)F -->
 <g id="edge4" class="edge">
 <title>m::com.android.server.power.thermal.ThermalManagerService$TemperatureWatcher.getForecast:(I)F&#45;&gt;m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature:(I)F</title>
-<path fill="none" stroke="#64748b" d="M396.06,-765.81C395.09,-757.18 393.89,-746.56 392.82,-737.03"/>
-<polygon fill="#64748b" stroke="#64748b" points="395.6,-736.66 391.92,-729.03 390.03,-737.29 395.6,-736.66"/>
+<path fill="none" stroke="#64748b" d="M395.82,-765.81C394.73,-757.18 393.38,-746.56 392.17,-737.03"/>
+<polygon fill="#64748b" stroke="#64748b" points="394.94,-736.61 391.16,-729.03 389.39,-737.32 394.94,-736.61"/>
 </g>
 <!-- m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature:(I)F&#45;&gt;com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock -->
 <g id="edge5" class="edge">
 <title>m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature:(I)F&#45;&gt;com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M383.49,-692.64C379.33,-681.56 373.88,-667.02 369.28,-654.74"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="371.82,-653.56 366.39,-647.05 366.58,-655.52 371.82,-653.56"/>
-<text text-anchor="middle" x="397" y="-667.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> acquires</text>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M381.41,-692.64C376.51,-681.45 370.07,-666.74 364.67,-654.39"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="367.23,-653.26 361.46,-647.05 362.1,-655.5 367.23,-653.26"/>
+<text text-anchor="middle" x="394" y="-667.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> acquires</text>
 </g>
 <!-- m::com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.resendCurrentTemperatures:()V -->
 <g id="node9" class="node">
@@ -217,8 +217,8 @@
 <!-- m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.connectToHal:()Z&#45;&gt;com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock -->
 <g id="edge20" class="edge">
 <title>m::com.android.server.power.thermal.ThermalManagerService$ThermalHalAidlWrapper.connectToHal:()Z&#45;&gt;com.android.server.power.thermal.ThermalManagerService$ThermalHalWrapper.mHalLock</title>
-<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M175.33,-36C171.08,-50.26 166,-71.23 166,-90 166,-548 166,-548 166,-548 166,-577.06 184.83,-595.77 210.75,-607.77"/>
-<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="209.79,-610.4 218.24,-610.98 211.99,-605.26 209.79,-610.4"/>
+<path fill="none" stroke="#dc2626" stroke-width="1.6" d="M175.33,-36C171.08,-50.26 166,-71.23 166,-90 166,-548 166,-548 166,-548 166,-577.18 185.41,-595.87 211.76,-607.79"/>
+<polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="210.91,-610.47 219.37,-610.98 213.07,-605.31 210.91,-610.47"/>
 <text text-anchor="middle" x="187" y="-325.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> acquires</text>
 </g>
 </g>

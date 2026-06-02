@@ -26,7 +26,7 @@
 <title>com.android.server.companion.datatransfer.continuity.tasks.RemoteTaskStore.mRemoteDeviceTaskLists&#45;&gt;m::com.android.server.companion.datatransfer.continuity.tasks.RemoteTaskStore.removeDevice:(I)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M243.25,-391.64C233.47,-380.14 220.52,-364.9 209.84,-352.34"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="211.81,-350.33 204.49,-346.05 207.54,-353.96 211.81,-350.33"/>
-<text text-anchor="middle" x="243" y="-366.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="246" y="-366.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.companion.datatransfer.continuity.tasks.RemoteTaskStore.mRemoteTaskListeners -->
 <g id="node2" class="node">
@@ -45,7 +45,7 @@
 <title>com.android.server.companion.datatransfer.continuity.tasks.RemoteTaskStore.mRemoteTaskListeners&#45;&gt;m::com.android.server.companion.datatransfer.continuity.tasks.RemoteTaskStore.addListener:(Landroid/companion/datatransfer/continuity/IRemoteTaskListener;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M152.68,-154.64C158.27,-143.45 165.63,-128.74 171.81,-116.39"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="174.4,-117.46 175.47,-109.05 169.39,-114.95 174.4,-117.46"/>
-<text text-anchor="middle" x="181" y="-129.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="184" y="-129.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.companion.datatransfer.continuity.tasks.RemoteTaskStore.notifyListeners:()V -->
 <g id="node4" class="node">

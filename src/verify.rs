@@ -160,7 +160,7 @@ fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
                 // first edge: "holds" (red); intermediate calls: plain arrows;
                 // last edge: "acquires" (red).
                 let _ = writeln!(
-                    s, "  \"{}\" -> \"{}\" [label=\" holds\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];",
+                    s, "  \"{}\" -> \"{}\" [label=\" held in\", color=\"#dc2626\", fontcolor=\"#dc2626\", penwidth=1.6];",
                     esc(&e.from), esc(&ids[0])
                 );
                 for w in ids.windows(2) {

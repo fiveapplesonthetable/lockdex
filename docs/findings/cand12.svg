@@ -26,7 +26,7 @@
 <title>com.android.server.audio.AudioDeviceBroker.mBluetoothAudioStateLock&#45;&gt;m::com.android.server.audio.AudioDeviceBroker.setBluetoothScoOn:(ZLjava/lang/String;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M617.5,-929.64C617.5,-918.66 617.5,-904.29 617.5,-892.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="620.3,-892.05 617.5,-884.05 614.7,-892.05 620.3,-892.05"/>
-<text text-anchor="middle" x="631.5" y="-904.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="634.5" y="-904.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.audio.AudioDeviceBroker.mDeviceStateLock -->
 <g id="node2" class="node">
@@ -52,7 +52,7 @@
 <title>com.android.server.audio.AudioDeviceBroker.mDeviceStateLock&#45;&gt;m::com.android.server.audio.AudioDeviceBroker$BrokerHandler.handleMessage:(Landroid/os/Message;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M392.5,-537.64C392.5,-526.66 392.5,-512.29 392.5,-500.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="395.3,-500.05 392.5,-492.05 389.7,-500.05 395.3,-500.05"/>
-<text text-anchor="middle" x="406.5" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="409.5" y="-512.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.audio.AudioDeviceInventory.mDevicesLock -->
 <g id="node3" class="node">
@@ -71,7 +71,7 @@
 <title>com.android.server.audio.AudioDeviceInventory.mDevicesLock&#45;&gt;m::com.android.server.audio.AudioDeviceInventory.onSetBtActiveDevice:(Lcom/android/server/audio/AudioDeviceBroker$BtDeviceInfo;II)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M452.65,-300.94C497.76,-288.14 559.54,-270.61 606.46,-257.3"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="607.51,-259.91 614.44,-255.04 605.98,-254.53 607.51,-259.91"/>
-<text text-anchor="middle" x="563.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="566.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.audio.AudioDeviceInventory.onMakeA2dpDeviceUnavailableNow:(Ljava/lang/String;I)V -->
 <g id="node13" class="node">
@@ -84,7 +84,7 @@
 <title>com.android.server.audio.AudioDeviceInventory.mDevicesLock&#45;&gt;m::com.android.server.audio.AudioDeviceInventory.onMakeA2dpDeviceUnavailableNow:(Ljava/lang/String;I)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M383.6,-300.64C377.87,-289.45 370.33,-274.74 364,-262.39"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="366.38,-260.89 360.24,-255.05 361.4,-263.45 366.38,-260.89"/>
-<text text-anchor="middle" x="388.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="391.5" y="-275.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- m::com.android.server.audio.AudioDeviceBroker.bluetoothScoRequestOwnerAttributionSource:()Landroid/content/AttributionSource; -->
 <g id="node5" class="node">

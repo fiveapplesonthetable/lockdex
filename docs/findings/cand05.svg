@@ -26,7 +26,7 @@
 <title>com.android.server.DeviceIdleController$LocalService.this$0&#45;&gt;m::com.android.server.DeviceIdleController$LocalService.onConstraintStateChanged:(Lcom/android/server/deviceidle/IDeviceIdleConstraint;Z)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M283.69,-683.84C267.15,-671.92 244.98,-655.94 227.13,-643.07"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="228.4,-640.54 220.27,-638.13 225.13,-645.08 228.4,-640.54"/>
-<text text-anchor="middle" x="273.5" y="-658.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> holds</text>
+<text text-anchor="middle" x="276.5" y="-658.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
 </g>
 <!-- com.android.server.alarm.AlarmManagerService.mLock -->
 <g id="node2" class="node">
