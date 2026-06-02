@@ -10,6 +10,7 @@ mod input;
 mod juc;
 mod model;
 mod report;
+mod verify;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -37,6 +38,23 @@ enum Cmd {
         /// narrow a Soong out dir to jars whose name contains this (e.g. services)
         #[arg(long)]
         scope: Option<String>,
+    },
+    /// Analyze, then pull the source for each candidate cycle and print a verdict.
+    Verify {
+        /// .dex, .jar/.apk (multidex), or a Soong `out` directory
+        input: PathBuf,
+        /// source checkout to resolve file:line against (e.g. ~/dev/aosp)
+        #[arg(long)]
+        src_root: PathBuf,
+        /// only verify cycles with at most this many locks
+        #[arg(long, default_value_t = 6)]
+        max_locks: usize,
+        /// narrow a Soong out dir to jars whose name contains this
+        #[arg(long)]
+        scope: Option<String>,
+        /// write the verification report here instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -71,6 +89,26 @@ fn main() -> Result<()> {
                 "dot" => print!("{}", report::dot(&g)),
                 "none" => {}
                 _ => print!("{}", report::text(&rep)),
+            }
+        }
+        Cmd::Verify { input, src_root, max_locks, scope, out } => {
+            let set = input::resolve(&input, scope.as_deref())?;
+            eprintln!("[lockdex] {} dex file(s)", set.files.len());
+            let dex = input::parse_all(&set)?;
+            let an = analyze::analyze(&dex);
+            let g = graph::LockGraph::build(&an.edges, &an.all_locks);
+            let rep = report::build_json(&an, &g);
+            eprintln!(
+                "[lockdex] {} cycles; verifying those with <= {} locks against {}",
+                rep.cycles.len(), max_locks, src_root.display()
+            );
+            let txt = verify::run(&rep, &src_root, max_locks);
+            match out {
+                Some(p) => {
+                    std::fs::write(&p, &txt)?;
+                    eprintln!("[lockdex] verification written to {}", p.display());
+                }
+                None => print!("{txt}"),
             }
         }
     }

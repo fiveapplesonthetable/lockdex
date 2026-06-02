@@ -13,6 +13,23 @@ No annotations (`@GuardedBy` is not needed), no instrumented build, no runtime
 trace. One dex is the whole program for analysis purposes, so lock identity and
 the call graph are resolved across the entire component.
 
+## Install
+
+```sh
+git clone https://github.com/fiveapplesonthetable/lockdex
+cd lockdex
+cargo build --release          # produces ./target/release/lockdex
+```
+
+Requirements:
+
+- A Rust toolchain (stable).
+- **`dexdump`** — the one runtime dependency. It ships with the Android SDK build
+  tools (`$ANDROID_SDK_ROOT/build-tools/<ver>/dexdump`) and with an AOSP host
+  build (`out/host/linux-x86/bin/dexdump`). Put it on `PATH`, or set
+  `LOCKDEX_DEXDUMP=/path/to/dexdump`.
+- Optional: `dot` (Graphviz) to render the cycle graph to SVG.
+
 ## Quick start on an AOSP tree
 
 After a normal build, the dexed jars live under your output directory. Point
@@ -66,6 +83,49 @@ named by the lock held at the call, so walking the heap graph walks the lock
 dependency chain.
 
 Output is deterministic: the same dex always produces byte-identical artifacts.
+
+## Verifying candidates against source
+
+A reported cycle is a *candidate*. The `verify` command analyzes, then for each
+small cycle pulls the source at both edge sites from a checkout, follows to where
+the *target* lock is actually acquired, and prints the two orderings side by side
+with a verdict:
+
+```sh
+lockdex verify "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+    --src-root "$ANDROID_BUILD_TOP/frameworks/base" \
+    --max-locks 3 \
+    --out verify.txt
+```
+
+For each candidate it shows the `synchronized(A)` block and the call that reaches
+`B`, then the `synchronized(B)` sites in B's class — so you can read the AB-BA
+directly. Example output:
+
+```
+CANDIDATE 1 : 2 locks
+   lock  …RemoteTaskStore.mRemoteDeviceTaskLists
+   lock  …RemoteTaskStore.mRemoteTaskListeners
+
+   mRemoteDeviceTaskLists -> mRemoteTaskListeners
+      hold mRemoteDeviceTaskLists at  …/RemoteTaskStore.java:179
+        >>  179   notifyListeners();         // inside synchronized(mRemoteDeviceTaskLists)
+      acquire mRemoteTaskListeners at  …/RemoteTaskStore.java:188  synchronized (mRemoteTaskListeners)
+
+   mRemoteTaskListeners -> mRemoteDeviceTaskLists
+      hold mRemoteTaskListeners at  …/RemoteTaskStore.java:130
+        >>  130   getMostRecentTasks();      // inside synchronized(mRemoteTaskListeners)
+      acquire mRemoteDeviceTaskLists at  …/RemoteTaskStore.java:113  synchronized (mRemoteDeviceTaskLists)
+
+   VERDICT: BOTH orderings located in source — distinct locks acquired in
+            opposite order. Real AB-BA if the two sites can run on different threads.
+```
+
+The verdict stops short of asserting the deadlock: confirming it also needs the
+two sites to run on different threads concurrently, which the tool deliberately
+does not guess (a sound answer would require a may-happen-in-parallel analysis).
+For Binder-entry methods like the pair above, concurrency is essentially always
+possible; read the two sites and decide.
 
 ## How it works
 
