@@ -7,7 +7,7 @@
 //! objects; (3) the two sides can run on different threads. (1) and (2) are
 //! checked mechanically; (3) still needs a human, but the sites make it quick.
 
-use crate::report::JsonReport;
+use crate::report::{CycleReport, JsonReport};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -92,6 +92,63 @@ fn parse_sample(s: &str) -> Option<(String, String, usize)> {
     Some((methodkey, class, line))
 }
 
+/// `com.android.server.am.UserController.mLock` -> `UserController.mLock`.
+fn short_lock(name: &str) -> String {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() >= 2 {
+        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    } else {
+        name.to_string()
+    }
+}
+
+fn esc(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// One candidate cycle as a Graphviz DAG: lock nodes (red boxes) joined by the
+/// actual call path of each order edge (held-in → calls… → acquires). The two
+/// edges share the lock nodes, so the AB-BA loop is visible.
+fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
+    use std::fmt::Write as _;
+    let mut s = String::from(
+        "digraph cycle {\n  rankdir=LR; node [fontsize=10];\n  edge [fontsize=9];\n",
+    );
+    for l in &c.locks {
+        let _ = writeln!(
+            s,
+            "  \"{}\" [shape=box,style=filled,fillcolor=\"#ffd6d6\",label=\"{}\"];",
+            esc(l), esc(&short_lock(l))
+        );
+    }
+    for e in &c.edges {
+        let holder = e.sample.as_deref().and_then(parse_sample).map(|(mk, _, _)| mk);
+        let path = holder.as_deref().and_then(|h| paths.path_to(h, &e.to, 16));
+        match path {
+            Some(p) if !p.is_empty() => {
+                let ids: Vec<String> = p.iter().map(|m| format!("m::{m}")).collect();
+                for (i, m) in p.iter().enumerate() {
+                    let _ = writeln!(s, "  \"{}\" [shape=ellipse,label=\"{}\"];", esc(&ids[i]), esc(&short_method(m)));
+                }
+                let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"held in\",color=red,fontcolor=red];", esc(&e.from), esc(&ids[0]));
+                for w in ids.windows(2) {
+                    let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"calls\"];", esc(&w[0]), esc(&w[1]));
+                }
+                let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"acquires\",color=red,fontcolor=red];", esc(ids.last().unwrap()), esc(&e.to));
+            }
+            _ => {
+                let _ = writeln!(
+                    s,
+                    "  \"{}\" -> \"{}\" [label=\"holds → acquires [{}x]\",color=red,fontcolor=red,style=dashed];",
+                    esc(&e.from), esc(&e.to), e.count
+                );
+            }
+        }
+    }
+    s.push_str("}\n");
+    s
+}
+
 /// `a.b.C$1.m:(...)V` -> `C$1.m` for compact path display.
 fn short_method(key: &str) -> String {
     let cm = key.split(':').next().unwrap_or(key); // a.b.C$1.m
@@ -120,7 +177,13 @@ fn lock_target(name: &str) -> Option<(String, String)> {
     Some((base[..dot].to_string(), base[dot + 1..].to_string()))
 }
 
-pub fn run(report: &JsonReport, paths: &crate::analyze::PathIndex, root: &Path, max_locks: usize) -> String {
+pub fn run(
+    report: &JsonReport,
+    paths: &crate::analyze::PathIndex,
+    root: &Path,
+    max_locks: usize,
+    svg_dir: Option<&Path>,
+) -> String {
     let mut src = Source::index(root);
     let mut out = String::new();
     let cycles: Vec<_> = report.cycles.iter().filter(|c| c.locks.len() <= max_locks).collect();
@@ -201,6 +264,20 @@ pub fn run(report: &JsonReport, paths: &crate::analyze::PathIndex, root: &Path, 
             "could not resolve sites under this source root."
         };
         let _ = writeln!(out, "\n   VERDICT: {verdict}\n");
+
+        // per-candidate SVG DAG: the locks + the real call path on each edge.
+        if let Some(d) = svg_dir {
+            let _ = std::fs::create_dir_all(d);
+            let dot = cycle_dot(c, paths);
+            let base = d.join(format!("cand{:02}", ci + 1));
+            let dotp = base.with_extension("dot");
+            let _ = std::fs::write(&dotp, &dot);
+            if let Ok(o) = std::process::Command::new("dot").arg("-Tsvg").arg(&dotp).output() {
+                if o.status.success() {
+                    let _ = std::fs::write(base.with_extension("svg"), o.stdout);
+                }
+            }
+        }
     }
     out
 }

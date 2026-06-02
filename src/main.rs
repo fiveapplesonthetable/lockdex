@@ -63,6 +63,9 @@ enum Cmd {
         /// async-sink adjustments file (see `analyze --async-sinks`)
         #[arg(long)]
         async_sinks: Option<PathBuf>,
+        /// also write one SVG per candidate cycle (the call-path DAG) into this dir
+        #[arg(long)]
+        svg_dir: Option<PathBuf>,
     },
 }
 
@@ -129,7 +132,7 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Verify { input, src_root, max_locks, scope, out, async_sinks } => {
+        Cmd::Verify { input, src_root, max_locks, scope, out, async_sinks, svg_dir } => {
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;
@@ -142,7 +145,10 @@ fn main() -> Result<()> {
                 "[lockdex] {} cycles; verifying those with <= {} locks against {}",
                 rep.cycles.len(), max_locks, src_root.display()
             );
-            let txt = verify::run(&rep, &an.paths, &src_root, max_locks);
+            let txt = verify::run(&rep, &an.paths, &src_root, max_locks, svg_dir.as_deref());
+            if let Some(d) = &svg_dir {
+                eprintln!("[lockdex] per-candidate SVGs written to {}", d.display());
+            }
             match out {
                 Some(p) => {
                     std::fs::write(&p, &txt)?;
