@@ -215,6 +215,11 @@ pub(super) fn compute(
     let mut keys: Vec<&String> = by_key.keys().collect();
     keys.sort();
     for k in keys {
+        // Generated AIDL proxies (`$Stub$Proxy`) synchronize on `this` to cache the
+        // interface hash, then transact — boilerplate, not an application finding.
+        if k.contains("$Stub$Proxy") {
+            continue;
+        }
         let s = &by_key[k];
         for (ci, call) in s.calls.iter().enumerate() {
             if call.is_async || call.held.is_empty() {

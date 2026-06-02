@@ -279,6 +279,10 @@ Output is deterministic, so comparing two builds needs no special mode: diff the
 `binder.json`, or use `go tool pprof -diff_base=old.pb.gz new.pb.gz` to see which
 hold-sites a change added or removed.
 
+See [`docs/BINDER_FINDINGS.md`](docs/BINDER_FINDINGS.md) for what this finds on a
+real `system_server` — the ranked locks held across IPC and the four high-risk
+incoming entries, with diagrams.
+
 ## Tuning the async-dispatch list
 
 Held locks are *severed* at calls that defer work to another thread, so a lock
