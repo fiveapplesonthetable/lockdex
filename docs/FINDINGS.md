@@ -1,438 +1,211 @@
-# Example findings — `system_server`
+# Findings — lock-order analysis of `system_server`
 
-Candidate lock-order (AB-BA) inversions `lockdex` reported on a build's
-`services.jar`, each traced back to source with `lockdex verify`.
+`lockdex` flagged 20 candidate lock-order cycles on a build's `services.jar`;
+`lockdex verify` traced each to source. The candidates below were then read by
+hand against AOSP `frameworks/base` — the call paths followed hop by hop, the
+locks checked for object identity, the `@GuardedBy`/threading annotations and any
+documented lock ordering taken into account.
 
-> **These are candidates, not confirmed bugs.** A reported cycle is a real
-> pair of opposite-order lock acquisitions in the bytecode; whether it can
-> actually deadlock further depends on the two sites running on different
-> threads concurrently, which lockdex deliberately does not guess. Read each
-> against the source before drawing conclusions. Generated, not hand-picked.
+This is the result of that review, not raw tool output. The confident inversions
+are listed first with a suggested fix; the candidates that did not survive review
+are listed at the end with the reason, because several are instructive about
+where static lock-order analysis over-reports.
 
-Reproduce:
-
-```sh
-lockdex verify "$ANDROID_BUILD_TOP/out" \
-    --src-root "$ANDROID_BUILD_TOP/frameworks/base" --max-locks 3 --out-dir ./cycles
-```
-
-| # | locks | diagram |
-|---|-------|---------|
-| 1 | `UserController.mLock` ⇄ `UserManagerService.mUsersLock` | [cand01](#1-usercontrollermlock-usermanagerservicemuserslock) |
-| 2 | `DisplayPowerController.mLock` ⇄ `DisplayBrightnessController.mLock` | [cand02](#2-displaypowercontrollermlock-displaybrightnesscontrollermlock) |
-| 3 | `BatteryController$LocalBluetoothBatteryManager.mBroadcastReceiver` ⇄ `BatteryController.mLock` | [cand03](#3-batterycontrollerlocalbluetoothbatterymanagermbroadcastreceiver-batterycontrollermlock) |
-| 4 | `LockSettingsService.mSeparateChallengeLock` ⇄ `LockSettingsService.mSpManager` | [cand04](#4-locksettingsservicemseparatechallengelock-locksettingsservicemspmanager) |
-| 5 | `DeviceIdleController$LocalService.this$0` ⇄ `AlarmManagerService.mLock` | [cand05](#5-deviceidlecontrollerlocalservicethis0-alarmmanagerservicemlock) |
-| 6 | `RemoteTaskStore.mRemoteDeviceTaskLists` ⇄ `RemoteTaskStore.mRemoteTaskListeners` | [cand06](#6-remotetaskstoremremotedevicetasklists-remotetaskstoremremotetasklisteners) |
-| 7 | `HdmiControlService.mLock` ⇄ `HdmiLocalDevice.mLock` | [cand07](#7-hdmicontrolservicemlock-hdmilocaldevicemlock) |
-| 8 | `OneTimePermissionUserManager$PackageInactivityListener.mInnerLock` ⇄ `OneTimePermissionUserManager.mLock` | [cand08](#8-onetimepermissionusermanagerpackageinactivitylistenerminnerlock-onetimepermissionusermanagermlock) |
-| 9 | `RemotePrintService.mLock` ⇄ `UserState.mLock` | [cand09](#9-remoteprintservicemlock-userstatemlock) |
-| 10 | `PinnedSliceState.mLock` ⇄ `SliceManagerService.mLock` | [cand10](#10-pinnedslicestatemlock-slicemanagerservicemlock) |
-| 11 | `JobSchedulerService.mLock` ⇄ `JobServiceContext.mLock` ⇄ `StateController.mLock` | [cand11](#11-jobschedulerservicemlock-jobservicecontextmlock-statecontrollermlock) |
-| 12 | `AppProfiler.mProcessCpuTracker` ⇄ `BatteryStatsService.mStats` ⇄ `BatteryHistoryStepDetailsProvider.mClock` | [cand12](#12-appprofilermprocesscputracker-batterystatsservicemstats-batteryhistorystepdetailsprovidermclock) |
-| 13 | `AudioService.mHdmiClientLock` ⇄ `AudioService.mSettingsLock` ⇄ `AudioService.mVolumeStateLock` | [cand13](#13-audioservicemhdmiclientlock-audioservicemsettingslock-audioservicemvolumestatelock) |
-| 14 | `AudioDeviceBroker.mBluetoothAudioStateLock` ⇄ `AudioDeviceBroker.mDeviceStateLock` ⇄ `AudioDeviceInventory.mDevicesLock` | [cand14](#14-audiodevicebrokermbluetoothaudiostatelock-audiodevicebrokermdevicestatelock-audiodeviceinventorymdeviceslock) |
-| 15 | `ListenerMultiplexer.mMultiplexerLock` ⇄ `DelegateLocationProvider.mInitializationLock` ⇄ `MockableLocationProvider.mOwnerLock` | [cand15](#15-listenermultiplexermmultiplexerlock-delegatelocationproviderminitializationlock-mockablelocationprovidermownerlock) |
-| 16 | `ThermalManagerService$TemperatureWatcher.mSamples` ⇄ `ThermalManagerService$ThermalHalWrapper.mHalLock` ⇄ `ThermalManagerService.mLock` | [cand16](#16-thermalmanagerservicetemperaturewatchermsamples-thermalmanagerservicethermalhalwrappermhallock-thermalmanagerservicemlock) |
-| 17 | `LocationTimeZoneProvider.mSharedLock` ⇄ `LocationTimeZoneProviderController.mSharedLock` ⇄ `LocationTimeZoneProviderProxy.mSharedLock` | [cand17](#17-locationtimezoneprovidermsharedlock-locationtimezoneprovidercontrollermsharedlock-locationtimezoneproviderproxymsharedlock) |
-
-## 1. `UserController.mLock` ⇄ `UserManagerService.mUsersLock`
-
-![candidate 1](findings/cand01.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`UserController.mLock` → `UserManagerService.mUsersLock`** (7×)  
-- holds `UserController.mLock` at `services/core/java/com/android/server/am/UserController.java:1584`  
-- path: `UserController.finishUserStopped  ->  UserController.getUserInfo  ->  UserManagerService.getUserInfo`  
-- acquires `UserManagerService.mUsersLock` at `services/core/java/com/android/server/pm/UserManagerService.java:1057` — `synchronized (mUms.mUsersLock) {`  
-
-**`UserManagerService.mUsersLock` → `UserController.mLock`** (1×)  
-- holds `UserManagerService.mUsersLock` at `services/core/java/com/android/server/pm/UserManagerService.java:7432`  
-- path: `UserManagerService.removeUserState  ->  ActivityManagerService$LocalService.onUserRemoved  ->  UserController.onUserRemoved`  
-- acquires `UserController.mLock` at `services/core/java/com/android/server/am/UserController.java:520` — `synchronized (mLock) {`  
+A reported cycle is a real pair of opposite-order acquisitions in the bytecode.
+Whether it can actually deadlock further requires the two sites to run on
+different threads concurrently — established per finding below, never assumed.
 
 ---
 
-## 2. `DisplayPowerController.mLock` ⇄ `DisplayBrightnessController.mLock`
+## Confident inversions
 
-![candidate 2](findings/cand02.png)
+### 1. `LockSettingsService.mSeparateChallengeLock` ⇄ `mSpManager`
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+![](findings/cand04.png)
 
-**`DisplayPowerController.mLock` → `DisplayBrightnessController.mLock`** (1×)  
-- holds `DisplayPowerController.mLock` at `services/core/java/com/android/server/display/DisplayPowerController.java:976`  
-- path: `DisplayPowerController.stop  ->  DisplayBrightnessController.stop  ->  DisplayBrightnessController.getAutoBrightnessFallbackStrategy`  
-- acquires `DisplayBrightnessController.mLock` at `services/core/java/com/android/server/display/brightness/DisplayBrightnessController.java:178` — `synchronized (mLock) {`  
+`LockSettingsService` declares a canonical order in a class comment:
+`mSeparateChallengeLock -> mSpManager` (`LockSettingsService.java:262-263`). One
+path honors it; another inverts it, on a different thread.
 
-**`DisplayBrightnessController.mLock` → `DisplayPowerController.mLock`** (1×)  
-- holds `DisplayBrightnessController.mLock` at `services/core/java/com/android/server/display/brightness/DisplayBrightnessController.java:179`  
-- path: `DisplayBrightnessController.updateBrightness  ->  DisplayBrightnessStrategySelector.selectStrategy  ->  DisplayBrightnessStrategySelector.isAutomaticBrightnessStrategyValid  ->  AutomaticBrightnessStrategy.setAutoBrightnessState  ->  AutomaticBrightnessStrategy.switchMode  ->  AutomaticBrightnessController.switchMode  ->  AutomaticBrightnessController.updateAutoBrightness  ->  DisplayPowerController.updateBrightness  ->  DisplayPowerController.sendUpdatePowerState`  
-- acquires `DisplayPowerController.mLock` at `services/core/java/com/android/server/display/DisplayPowerController.java:813` — `synchronized (mLock) {`  
+- **`mSeparateChallengeLock` → `mSpManager`** — `setLockCredential` takes
+  `mSeparateChallengeLock` (`:1921`) then `mSpManager` via `setLockCredentialInternal`
+  (`:1980`). Binder thread; matches the documented order.
+- **`mSpManager` → `mSeparateChallengeLock`** — the runnable posted by
+  `onUserUnlocking` takes `mSpManager` (`:953`) then `mSeparateChallengeLock` via
+  `tieProfileLockIfNecessary` → `getSeparateProfileChallengeEnabledInternal`
+  (`:1368`). `mHandler` thread; **inverts** the documented order.
 
----
+The locks are distinct objects (`:267`, `:289`) and the two sites run on a Binder
+thread and the `mHandler` thread, so they can interleave. The maintainers treat
+this order as load-bearing — that's why it's written down — and the unlock path
+breaks it.
 
-## 3. `BatteryController$LocalBluetoothBatteryManager.mBroadcastReceiver` ⇄ `BatteryController.mLock`
+**Fix.** On the unlock path, take `mSeparateChallengeLock` before `mSpManager`
+(the documented order), or read the separate-challenge flag — the only thing that
+needs `mSeparateChallengeLock` inside that block — before entering
+`synchronized (mSpManager)`.
 
-![candidate 3](findings/cand03.png)
+### 2. `RemoteTaskStore.mRemoteDeviceTaskLists` ⇄ `mRemoteTaskListeners`
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+![](findings/cand06.png)
 
-**`BatteryController$LocalBluetoothBatteryManager.mBroadcastReceiver` → `BatteryController.mLock`** (1×)  
-- holds `BatteryController$LocalBluetoothBatteryManager.mBroadcastReceiver` at `services/core/java/com/android/server/input/BatteryController.java:967`  
-- path: `BatteryController$LocalBluetoothBatteryManager$1.onReceive  ->  BatteryController$$ExternalSyntheticLambda4.onBluetoothBatteryChanged  ->  BatteryController.$r8$lambda$kHxElP6jGL2CI2h9-PGs0oeXj6g  ->  BatteryController.handleBluetoothBatteryLevelChange`  
-- acquires `BatteryController.mLock` at `services/core/java/com/android/server/input/BatteryController.java:137` — `synchronized (mLock) {`  
+Two monitors in one class, taken in both orders, with no `@GuardedBy` or ordering
+comment anywhere in the file — the nesting discipline is implicit and the code
+breaks it.
 
-**`BatteryController.mLock` → `BatteryController$LocalBluetoothBatteryManager.mBroadcastReceiver`** (4×)  
-- holds `BatteryController.mLock` at `services/core/java/com/android/server/input/BatteryController.java:481`  
-- path: `BatteryController$1.onInputDeviceAdded  ->  BatteryController$UsiDeviceMonitor.<init>  ->  BatteryController$DeviceMonitor.<init>  ->  BatteryController$DeviceMonitor.configureDeviceMonitor  ->  BatteryController.-$$Nest$mupdateBluetoothBatteryMonitoring  ->  BatteryController.updateBluetoothBatteryMonitoring  ->  BatteryController$LocalBluetoothBatteryManager.addBatteryListener`  
-- acquires `BatteryController$LocalBluetoothBatteryManager.mBroadcastReceiver` at `services/core/java/com/android/server/input/BatteryController.java:964` — `synchronized (mBroadcastReceiver) {`  
+- **`mRemoteDeviceTaskLists` → `mRemoteTaskListeners`** — `removeDevice` holds the
+  map lock (`:173`) then calls `notifyListeners()` → `synchronized (mRemoteTaskListeners)`
+  (`:188`). Runs on the transport-teardown thread (`onAssociationDisconnected`,
+  no Handler hop).
+- **`mRemoteTaskListeners` → `mRemoteDeviceTaskLists`** — `addListener` holds the
+  listener lock (`:128`) then calls `getMostRecentTasks()` → `synchronized
+  (mRemoteDeviceTaskLists)` (`:52`). Reached over Binder
+  (`ITaskContinuityManager.Stub.registerRemoteTaskListener`).
 
----
+Distinct objects, genuinely inverted, different threads. A Binder client
+registering a listener while a device disconnects is the textbook AB-BA.
+(`notifyListeners` even nests lock-2→lock-1 within one call chain, so the design
+is intrinsically order-mixed.)
 
-## 4. `LockSettingsService.mSeparateChallengeLock` ⇄ `LockSettingsService.mSpManager`
+**Fix.** Establish one order and keep `getMostRecentTasks()` (which takes
+`mRemoteDeviceTaskLists`) out of any `synchronized (mRemoteTaskListeners)` block —
+snapshot the tasks before taking the listener lock. Collapsing both to a single
+lock is the robust option for a class this small.
 
-![candidate 4](findings/cand04.png)
+### 3. `OneTimePermissionUserManager.mLock` ⇄ `PackageInactivityListener.mInnerLock`
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+![](findings/cand08.png)
 
-**`LockSettingsService.mSeparateChallengeLock` → `LockSettingsService.mSpManager`** (3×)  
-- holds `LockSettingsService.mSeparateChallengeLock` at `services/core/java/com/android/server/locksettings/LockSettingsService.java:1922`  
-- path: `LockSettingsService.setLockCredential  ->  LockSettingsService.doVerifyCredential`  
-- acquires `LockSettingsService.mSpManager` at `services/core/java/com/android/server/locksettings/LockSettingsService.java:953` — `synchronized (mSpManager) {`  
+The manager-wide `mLock` guards the uid→listener map (`@GuardedBy("mLock")`,
+`:98`); the per-listener `mInnerLock` guards that listener's alarm/uid-observer
+state. They are acquired in both orders across different threads.
 
-**`LockSettingsService.mSpManager` → `LockSettingsService.mSeparateChallengeLock`** (3×)  
-- holds `LockSettingsService.mSpManager` at `services/core/java/com/android/server/locksettings/LockSettingsService.java:954`  
-- path: `LockSettingsService$1.run  ->  LockSettingsService.-$$Nest$mtieProfileLockIfNecessary  ->  LockSettingsService.tieProfileLockIfNecessary  ->  LockSettingsService.getSeparateProfileChallengeEnabledInternal`  
-- acquires `LockSettingsService.mSeparateChallengeLock` at `services/core/java/com/android/server/locksettings/LockSettingsService.java:1368` — `synchronized (mSeparateChallengeLock) {`  
+- **`mInnerLock` → `mLock`** — the uid-observer callback
+  `onUidGone`/`onUidStateChanged` → `updateUidState` takes `mInnerLock` (`:347`) →
+  `onPackageInactiveLocked` takes `mLock` via `mListeners.remove(mUid)` (`:471`).
+  Oneway Binder thread.
+- **`mLock` → `mInnerLock`** — `mUninstallListener.onReceive` takes `mLock` (`:82`)
+  → `listener.cancel()` takes `mInnerLock` (`:394`). Main thread (receiver
+  registered with no Handler).
 
----
+Distinct objects, opposite order, concurrent threads (Binder observer vs. main-
+thread broadcast), on the same listener instance during an uninstall-while-active
+session.
 
-## 5. `DeviceIdleController$LocalService.this$0` ⇄ `AlarmManagerService.mLock`
+**Fix.** Pick a global order — `mLock → mInnerLock` is the natural one — and hold
+to it both ways. `onPackageInactiveLocked` takes `mInnerLock` then `mLock`; hoist
+the `mListeners.remove(mUid)` out of the `mInnerLock` region (or take `mLock`
+first) so it matches the `onReceive` side.
 
-![candidate 5](findings/cand05.png)
+### 4. `BatteryController.mLock` ⇄ `LocalBluetoothBatteryManager.mBroadcastReceiver`
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+![](findings/cand03.png)
 
-**`DeviceIdleController$LocalService.this$0` → `AlarmManagerService.mLock`** (1×)  
-- holds `DeviceIdleController$LocalService.this$0` at `apex/jobscheduler/service/java/com/android/server/DeviceIdleController.java:2323`  
-- path: `DeviceIdleController$LocalService.onConstraintStateChanged  ->  DeviceIdleController.-$$Nest$monConstraintStateChangedLocked  ->  DeviceIdleController.onConstraintStateChangedLocked  ->  DeviceIdleController.becomeInactiveIfAppropriateLocked  ->  DeviceIdleController.verifyAlarmStateLocked  ->  AlarmManagerService$LocalService.isIdling  ->  AlarmManagerService.-$$Nest$misIdlingImpl  ->  AlarmManagerService.isIdlingImpl`  
-- acquires `AlarmManagerService.mLock` at `apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java:866` — `synchronized (mLock) {`  
+`BatteryController`'s class javadoc notes it is touched from Binder threads, the
+UEventObserver thread, and its own Handler. One lock is a `BroadcastReceiver`
+object used as a monitor; the other is the controller's `mLock`. Both `@GuardedBy`
+sets are internally consistent, but the two are nested in opposite orders on
+different threads.
 
-**`AlarmManagerService.mLock` → `DeviceIdleController$LocalService.this$0`** (2×)  
-- holds `AlarmManagerService.mLock` at `apex/jobscheduler/service/java/com/android/server/alarm/AlarmManagerService.java:1990`  
-- path: `(not reconstructed — chain too deep or via an over-approximated call)`  
+- **`mBroadcastReceiver` → `mLock`** — `onReceive` holds `mBroadcastReceiver`
+  (`:964`) then invokes the listener `handleBluetoothBatteryLevelChange`, which
+  takes `mLock` (`:387`). Main Looper (receiver registered without a scheduler).
+- **`mLock` → `mBroadcastReceiver`** — `onInputDeviceAdded` holds `mLock` (`:478`),
+  constructs a `UsiDeviceMonitor` → `addBatteryListener` → `synchronized
+  (mBroadcastReceiver)` (`:981`). DisplayThread (input listener on `mHandler`).
 
----
+Distinct objects; the main-thread leg fires on a BT battery-level broadcast, the
+DisplayThread leg on adding/changing an input device — both normal operation,
+narrow window, nothing forbids the nesting.
 
-## 6. `RemoteTaskStore.mRemoteDeviceTaskLists` ⇄ `RemoteTaskStore.mRemoteTaskListeners`
+**Fix.** Never take `mBroadcastReceiver` while holding `mLock`: register the BT
+listener (`addBatteryListener`) outside the `synchronized (mLock)` region.
+Symmetrically, have `onReceive` copy the level and release `mBroadcastReceiver`
+before calling the listener that takes `mLock`.
 
-![candidate 6](findings/cand06.png)
+### 5. `UserController.mLock` ⇄ `UserManagerService.mUsersLock`
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+![](findings/cand01.png)
 
-**`RemoteTaskStore.mRemoteDeviceTaskLists` → `RemoteTaskStore.mRemoteTaskListeners`** (1×)  
-- holds `RemoteTaskStore.mRemoteDeviceTaskLists` at `services/companion/java/com/android/server/companion/datatransfer/continuity/tasks/RemoteTaskStore.java:179`  
-- path: `RemoteTaskStore.removeDevice  ->  RemoteTaskStore.notifyListeners`  
-- acquires `RemoteTaskStore.mRemoteTaskListeners` at `services/companion/java/com/android/server/companion/datatransfer/continuity/tasks/RemoteTaskStore.java:128` — `synchronized (mRemoteTaskListeners) {`  
+Two service monitors across the `am`/`pm` boundary: `UserController.mLock` guards
+started-user state, `UserManagerService.mUsersLock` guards the user list. No
+documented order exists between them.
 
-**`RemoteTaskStore.mRemoteTaskListeners` → `RemoteTaskStore.mRemoteDeviceTaskLists`** (2×)  
-- holds `RemoteTaskStore.mRemoteTaskListeners` at `services/companion/java/com/android/server/companion/datatransfer/continuity/tasks/RemoteTaskStore.java:130`  
-- path: `RemoteTaskStore.addListener  ->  RemoteTaskStore.getMostRecentTasks`  
-- acquires `RemoteTaskStore.mRemoteDeviceTaskLists` at `services/companion/java/com/android/server/companion/datatransfer/continuity/tasks/RemoteTaskStore.java:52` — `synchronized (mRemoteDeviceTaskLists) {`  
+- **`mLock` → `mUsersLock`** — `finishUserStopped` holds `mLock` (`:1563`) and via
+  `updateUserToLockLU` → `getUserPropertiesInternal`/`hasUserRestriction` takes
+  `mUsersLock` (`UserManagerService.java:2732`). UserController `mHandler` thread.
+  (Reachability is gated by the delayed-locking config branch.)
+- **`mUsersLock` → `mLock`** — `removeUserState` holds `mUsersLock` (`:7430`) and
+  calls `getActivityManagerInternal().onUserRemoved` → `UserController.onUserRemoved`,
+  `synchronized (mLock)` (`UserController.java:3927`). Removal/Binder thread.
 
----
+Distinct objects, opposite order, different threads. The forward leg is config-
+dependent, which is why this sits below the four above.
 
-## 7. `HdmiControlService.mLock` ⇄ `HdmiLocalDevice.mLock`
-
-![candidate 7](findings/cand07.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`HdmiControlService.mLock` → `HdmiLocalDevice.mLock`** (3×)  
-- holds `HdmiControlService.mLock` at `services/core/java/com/android/server/hdmi/HdmiControlService.java:1507`  
-- path: `HdmiControlService$22.onAllocated  ->  HdmiCecLocalDevice.setDeviceInfo`  
-- acquires `HdmiLocalDevice.mLock` at `services/core/java/com/android/server/hdmi/HdmiCecLocalDevice.java:716` — `synchronized (mLock) {`  
-
-**`HdmiLocalDevice.mLock` → `HdmiControlService.mLock`** (12×)  
-- holds `HdmiLocalDevice.mLock` at `services/core/java/com/android/server/hdmi/HdmiCecLocalDeviceAudioSystem.java:260`  
-- path: `HdmiCecLocalDeviceAudioSystem.onStandby  ->  HdmiControlService.setActiveSource`  
-- acquires `HdmiControlService.mLock` at `services/core/java/com/android/server/hdmi/HdmiControlService.java:771` — `synchronized (mLock) {`  
-
----
-
-## 8. `OneTimePermissionUserManager$PackageInactivityListener.mInnerLock` ⇄ `OneTimePermissionUserManager.mLock`
-
-![candidate 8](findings/cand08.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`OneTimePermissionUserManager$PackageInactivityListener.mInnerLock` → `OneTimePermissionUserManager.mLock`** (4×)  
-- holds `OneTimePermissionUserManager$PackageInactivityListener.mInnerLock` at `services/core/java/com/android/server/pm/permission/OneTimePermissionUserManager.java:264`  
-- path: `OneTimePermissionUserManager$PackageInactivityListener.<init>  ->  OneTimePermissionUserManager$PackageInactivityListener.onPackageInactiveLocked`  
-- acquires `OneTimePermissionUserManager.mLock` at `services/core/java/com/android/server/pm/permission/OneTimePermissionUserManager.java:82` — `synchronized (mLock) {`  
-
-**`OneTimePermissionUserManager.mLock` → `OneTimePermissionUserManager$PackageInactivityListener.mInnerLock`** (3×)  
-- holds `OneTimePermissionUserManager.mLock` at `services/core/java/com/android/server/pm/permission/OneTimePermissionUserManager.java:88`  
-- path: `OneTimePermissionUserManager$1.onReceive  ->  OneTimePermissionUserManager$PackageInactivityListener.-$$Nest$mcancel  ->  OneTimePermissionUserManager$PackageInactivityListener.cancel`  
-- acquires `OneTimePermissionUserManager$PackageInactivityListener.mInnerLock` at `services/core/java/com/android/server/pm/permission/OneTimePermissionUserManager.java:263` — `synchronized (mInnerLock) {`  
-
----
-
-## 9. `RemotePrintService.mLock` ⇄ `UserState.mLock`
-
-![candidate 9](findings/cand09.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`RemotePrintService.mLock` → `UserState.mLock`** (1×)  
-- holds `RemotePrintService.mLock` at `services/print/java/com/android/server/print/RemotePrintService.java:654`  
-- path: `RemotePrintService$RemoteServiceConneciton.onServiceConnected  ->  RemotePrintService.-$$Nest$mhandleBinderDied  ->  RemotePrintService.handleBinderDied  ->  UserState.onServiceDied`  
-- acquires `UserState.mLock` at `services/print/java/com/android/server/print/UserState.java:171` — `synchronized (mLock) {`  
-
-**`UserState.mLock` → `RemotePrintService.mLock`** (1×)  
-- holds `UserState.mLock` at `services/print/java/com/android/server/print/UserState.java:865`  
-- path: `UserState.dump  ->  RemotePrintService.dump`  
-- acquires `RemotePrintService.mLock` at `services/print/java/com/android/server/print/RemotePrintService.java:457` — `synchronized (mLock) {`  
+**Fix.** Don't call across the service boundary while holding the other service's
+lock. On the removal side, move `getActivityManagerInternal().onUserRemoved(...)`
+out of `synchronized (mUsersLock)` (`UserManagerService.java:7430-7433`); on the
+stop side, hoist the UMS property/restriction queries in `updateUserToLockLU` out
+of the `mLock` region. Either break is sufficient.
 
 ---
 
-## 10. `PinnedSliceState.mLock` ⇄ `SliceManagerService.mLock`
+## Lower confidence — worth a runtime/lockdep check
 
-![candidate 10](findings/cand10.png)
+### `BatteryStatsService.mStats` ⇄ `SYSTEM_CLOCK` (`BatteryHistoryStepDetailsProvider.mClock`)
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+![](findings/cand12.png)
 
-**`PinnedSliceState.mLock` → `SliceManagerService.mLock`** (1×)  
-- holds `PinnedSliceState.mLock` at `services/core/java/com/android/server/slice/PinnedSliceState.java:180`  
-- path: `PinnedSliceState.handleRecheckListeners  ->  PinnedSliceState.checkSelfRemove  ->  SliceManagerService.removePinnedSlice`  
-- acquires `SliceManagerService.mLock` at `services/core/java/com/android/server/slice/SliceManagerService.java:138` — `synchronized (mLock) {`  
+`mClock` is `Clock.SYSTEM_CLOCK`, a process-global singleton shared into the
+step-details provider — so the 3-lock SCC is really a two-lock pair, `mStats` vs.
+that clock monitor. Forward `mStats → mClock` is synchronous in
+`setBatteryStateLocked` → `requestUpdate` `else`-branch
+(`BatteryHistoryStepDetailsProvider.java:106`), on a Binder thread; reverse
+`mClock → mStats` is on the `mHandler` thread inside the `requestUpdate`
+`if`-branch `postDelayed` runnable (`:99` → `AppProfiler.java:2181`). Distinct
+monitors, opposite order, different threads — genuine — but whether both orders
+are ever simultaneously in flight depends on which threads drive each, and the
+boot-gated `if`-branch (`!mSystemReady || mFirstUpdate`) muddies it. Confirm with
+lockdep/trace rather than dismiss.
 
-**`SliceManagerService.mLock` → `PinnedSliceState.mLock`** (1×)  
-- holds `SliceManagerService.mLock` at `services/core/java/com/android/server/slice/SliceManagerService.java:359`  
-- path: `SliceManagerService.removePinnedSlice  ->  PinnedSliceState.destroy  ->  PinnedSliceState.setSlicePinned`  
-- acquires `PinnedSliceState.mLock` at `services/core/java/com/android/server/slice/PinnedSliceState.java:76` — `synchronized (mLock) {`  
+### `ThermalManagerService.mLock` ⇄ `ThermalHalWrapper.mHalLock`
 
----
+![](findings/cand16.png)
 
-## 11. `JobSchedulerService.mLock` ⇄ `JobServiceContext.mLock` ⇄ `StateController.mLock`
+Distinct monitors. `mLock → mHalLock` runs once at boot (`onActivityManagerReady`,
+`:253` → `connectToHal`, `:1413`); `mHalLock → mLock` runs in the HAL death
+recipient (`serviceDied` holds `mHalLock` at `:1216`, then `resendCurrentTemperatures`
+→ service `onTemperatureChanged` takes `mLock` at `:482`). A real cross-thread
+inversion, but reachable only if the thermal HAL dies during boot bring-up — low
+probability, not impossible.
 
-![candidate 11](findings/cand11.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`JobSchedulerService.mLock` → `JobServiceContext.mLock`** (10×)  
-- holds `JobSchedulerService.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobSchedulerService.java:1439`  
-- path: `JobSchedulerService$3.onReceive  ->  JobSchedulerService.-$$Nest$mcancelJobsForPackageAndUidLocked  ->  JobSchedulerService.cancelJobsForPackageAndUidLocked  ->  JobSchedulerService.cancelJobImplLocked  ->  JobConcurrencyManager.stopJobOnServiceContextLocked  ->  JobServiceContext.cancelExecutingJobLocked  ->  JobServiceContext.doCancelLocked  ->  JobServiceContext.handleCancelLocked  ->  JobServiceContext.sendStopMessageLocked  ->  JobServiceContext.closeAndCleanupJobLocked  ->  JobConcurrencyManager.onJobCompletedLocked  ->  JobConcurrencyManager.startJobLocked  ->  JobServiceContext.executeRunnableJob`  
-- acquires `JobServiceContext.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobServiceContext.java:387` — `synchronized (mLock) {`  
-
-**`JobSchedulerService.mLock` → `StateController.mLock`** (20×)  
-- holds `JobSchedulerService.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobSchedulerService.java:1439`  
-- path: `JobSchedulerService$3.onReceive  ->  TimeController.reevaluateStateLocked  ->  TimeController.checkExpiredDeadlinesAndResetAlarm`  
-- acquires `StateController.mLock` at `apex/jobscheduler/service/java/com/android/server/job/controllers/TimeController.java:238` — `synchronized (mLock) {`  
-
-**`JobServiceContext.mLock` → `JobSchedulerService.mLock`** (5×)  
-- holds `JobServiceContext.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobServiceContext.java:1213`  
-- path: `JobServiceContext$JobServiceHandler.handleMessage  ->  JobServiceContext.handleOpTimeoutLocked  ->  JobServiceContext.closeAndCleanupJobLocked  ->  JobSchedulerService.getUidProcState`  
-- acquires `JobSchedulerService.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobSchedulerService.java:532` — `synchronized (mLock) {`  
-
-**`JobServiceContext.mLock` → `StateController.mLock`** (5×)  
-- holds `JobServiceContext.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobServiceContext.java:1213`  
-- path: `JobServiceContext$JobServiceHandler.handleMessage  ->  JobServiceContext.handleOpTimeoutLocked  ->  JobSchedulerService.isReadyToBeExecutedLocked  ->  JobSchedulerService.evaluateControllerStatesLocked  ->  ConnectivityController.evaluateStateLocked  ->  ConnectivityController.isNetworkAvailable`  
-- acquires `StateController.mLock` at `apex/jobscheduler/service/java/com/android/server/job/controllers/ConnectivityController.java:437` — `synchronized (mLock) {`  
-
-**`StateController.mLock` → `JobSchedulerService.mLock`** (28×)  
-- holds `StateController.mLock` at `apex/jobscheduler/service/java/com/android/server/job/controllers/BatteryController.java:145`  
-- path: `BatteryController.lambda$onBatteryStateChangedLocked$0  ->  BatteryController.maybeReportNewChargingStateLocked  ->  JobSchedulerService.isPowerConnected`  
-- acquires `JobSchedulerService.mLock` at `apex/jobscheduler/service/java/com/android/server/job/JobSchedulerService.java:532` — `synchronized (mLock) {`  
+**Fix (if confirmed).** Release `mHalLock` before the listener callout in
+`serviceDied` (post the resend), so HAL-handle state and the service lock never
+nest.
 
 ---
 
-## 12. `AppProfiler.mProcessCpuTracker` ⇄ `BatteryStatsService.mStats` ⇄ `BatteryHistoryStepDetailsProvider.mClock`
+## Surfaced by the tool, set aside on review
 
-![candidate 12](findings/cand12.png)
+These were reported and then dismissed. Most are the documented limitation —
+lock identity is keyed by the field's declaring class, so two fields that alias
+**one** `Object` (shared via a getter) look like two locks. A couple follow a
+documented total order; a couple have the back-edge severed by an async hop.
 
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
+| candidate | why it's not a deadlock |
+|---|---|
+| `HdmiControlService.mLock` ⇄ `HdmiLocalDevice.mLock` | same object — `mLock = service.getServiceLock()`; reentrant, not AB-BA |
+| `PinnedSliceState.mLock` ⇄ `SliceManagerService.mLock` | same object — `mLock = mService.getLock()` |
+| `JobSchedulerService.mLock` ⇄ `JobServiceContext.mLock` ⇄ `StateController.mLock` | one shared lock — all `= service.getLock()` (the global scheduler lock) |
+| `LocationTimeZoneProvider/Controller/Proxy.mSharedLock` | one shared lock — all `= threadingDomain.getLockObject()`, pinned to one thread |
+| `MockableLocationProvider.mOwnerLock` ⇄ `ListenerMultiplexer.mMultiplexerLock` ⇄ … | `mOwnerLock` **is** `mMultiplexerLock`; the remaining real arc is unreachable (null-listener guard during construct-then-install) |
+| `AudioService.mSettingsLock`/`mHdmiClientLock`/`mVolumeStateLock` | documented total order `mSettingsLock ⊃ mHdmiClientLock ⊃ mVolumeStateLock`; the closing edge is a reentrant re-lock under `mSettingsLock` |
+| `AudioDeviceBroker.mDeviceStateLock`/`mDevicesLock`/`mBluetoothAudioStateLock` | documented hierarchy (`mDeviceStateLock` outermost), single `BrokerHandler` thread; reverse edges are reentrant `@GuardedBy("mDeviceStateLock")` re-locks |
+| `DisplayPowerController.mLock` ⇄ `DisplayBrightnessController.mLock` | back-edge severed: `switchMode(sendUpdate=false)` never re-enters DPC while DBC's lock is held |
+| `DeviceIdleController.this` ⇄ `AlarmManagerService.mLock` | reverse edges severed: a `REPORT_ALARMS_ACTIVE` Handler hop and an explicit "must not be called with mLock held" contract (+ `holdsLock` wtf assert) |
+| `RemotePrintService.mLock` ⇄ `UserState.mLock` | the A→B path is spurious (re-enters its own lock); only the one-directional dump path is real |
 
-**`AppProfiler.mProcessCpuTracker` → `BatteryStatsService.mStats`** (2×)  
-- holds `AppProfiler.mProcessCpuTracker` at `services/core/java/com/android/server/am/AppProfiler.java:2681`  
-- path: `AppProfiler.getAppProfileStatsForDebugging  ->  AppProfiler.updateCpuStatsNow`  
-
-**`BatteryStatsService.mStats` → `BatteryHistoryStepDetailsProvider.mClock`** (1×)  
-- holds `BatteryStatsService.mStats` at `services/core/java/com/android/server/am/BatteryStatsService.java:2818`  
-- path: `BatteryStatsService.lambda$setBatteryState$95  ->  BatteryStatsImpl.setBatteryStateLocked  ->  BatteryHistoryStepDetailsProvider.requestUpdate`  
-- acquires `BatteryHistoryStepDetailsProvider.mClock` at `services/core/java/com/android/server/power/stats/BatteryHistoryStepDetailsProvider.java:99` — `synchronized (mClock) {`  
-
-**`BatteryHistoryStepDetailsProvider.mClock` → `AppProfiler.mProcessCpuTracker`** (1×)  
-- holds `BatteryHistoryStepDetailsProvider.mClock` at `services/core/java/com/android/server/power/stats/BatteryHistoryStepDetailsProvider.java:102`  
-- path: `BatteryHistoryStepDetailsProvider.lambda$requestUpdate$0  ->  BatteryHistoryStepDetailsProvider.update  ->  BatteryStatsImpl.updateCpuDetails  ->  ActivityManagerService.batteryNeedsCpuUpdate  ->  ActivityManagerService.updateCpuStatsNow  ->  AppProfiler.updateCpuStatsNow`  
-- acquires `AppProfiler.mProcessCpuTracker` at `services/core/java/com/android/server/am/AppProfiler.java:623` — `synchronized (mProcessCpuTracker) {`  
-
-**`BatteryHistoryStepDetailsProvider.mClock` → `BatteryStatsService.mStats`** (1×)  
-- holds `BatteryHistoryStepDetailsProvider.mClock` at `services/core/java/com/android/server/power/stats/BatteryHistoryStepDetailsProvider.java:102`  
-- path: `BatteryHistoryStepDetailsProvider.lambda$requestUpdate$0  ->  BatteryHistoryStepDetailsProvider.update  ->  BatteryStatsImpl.updateCpuDetails  ->  ActivityManagerService.batteryNeedsCpuUpdate  ->  ActivityManagerService.updateCpuStatsNow  ->  AppProfiler.updateCpuStatsNow`  
-
----
-
-## 13. `AudioService.mHdmiClientLock` ⇄ `AudioService.mSettingsLock` ⇄ `AudioService.mVolumeStateLock`
-
-![candidate 13](findings/cand13.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`AudioService.mHdmiClientLock` → `AudioService.mVolumeStateLock`** (4×)  
-- holds `AudioService.mHdmiClientLock` at `services/core/java/com/android/server/audio/AudioService.java:4419`  
-- path: `AudioService.adjustStreamVolume  ->  AudioService$VolumeStreamState.getIndex`  
-- acquires `AudioService.mVolumeStateLock` at `services/core/java/com/android/server/audio/AudioService.java:1743` — `synchronized (mVolumeStateLock) {`  
-
-**`AudioService.mSettingsLock` → `AudioService.mHdmiClientLock`** (1×)  
-- holds `AudioService.mSettingsLock` at `services/core/java/com/android/server/audio/AudioSystemAdapter.java:4571`  
-- path: `(not reconstructed — chain too deep or via an over-approximated call)`  
-
-**`AudioService.mSettingsLock` → `AudioService.mVolumeStateLock`** (48×)  
-- holds `AudioService.mSettingsLock` at `services/core/java/com/android/server/audio/AudioService.java:14005`  
-- path: `AudioService$AudioServiceInternal.updateRingerModeAffectedStreamsInternal  ->  AudioService.-$$Nest$msetRingerModeInt  ->  AudioService.setRingerModeInt  ->  AudioService.updateStreamMuteFromRingerMode`  
-- acquires `AudioService.mVolumeStateLock` at `services/core/java/com/android/server/audio/AudioService.java:1743` — `synchronized (mVolumeStateLock) {`  
-
-**`AudioService.mVolumeStateLock` → `AudioService.mSettingsLock`** (21×)  
-- holds `AudioService.mVolumeStateLock` at `services/core/java/com/android/server/audio/AudioService.java:9707`  
-- path: `AudioService$VolumeGroupState.applyAllVolumes  ->  AudioService$VolumeStreamState.setIndex`  
-- acquires `AudioService.mSettingsLock` at `services/core/java/com/android/server/audio/AudioService.java:2605` — `synchronized (mSettingsLock) {`  
-
----
-
-## 14. `AudioDeviceBroker.mBluetoothAudioStateLock` ⇄ `AudioDeviceBroker.mDeviceStateLock` ⇄ `AudioDeviceInventory.mDevicesLock`
-
-![candidate 14](findings/cand14.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`AudioDeviceBroker.mBluetoothAudioStateLock` → `AudioDeviceBroker.mDeviceStateLock`** (1×)  
-- holds `AudioDeviceBroker.mBluetoothAudioStateLock` at `services/core/java/com/android/server/audio/AudioDeviceBroker.java:1274`  
-- path: `AudioDeviceBroker.setBluetoothScoOn  ->  AudioDeviceBroker.bluetoothScoRequestOwnerAttributionSource  ->  AudioDeviceBroker.isBluetoothScoRequested  ->  AudioDeviceBroker.isDeviceRequestedForCommunication`  
-- acquires `AudioDeviceBroker.mDeviceStateLock` at `services/core/java/com/android/server/audio/AudioDeviceBroker.java:264` — `synchronized (mDeviceStateLock) {`  
-
-**`AudioDeviceBroker.mDeviceStateLock` → `AudioDeviceBroker.mBluetoothAudioStateLock`** (18×)  
-- holds `AudioDeviceBroker.mDeviceStateLock` at `services/core/java/com/android/server/audio/AudioDeviceBroker.java:1983`  
-- path: `(not reconstructed — chain too deep or via an over-approximated call)`  
-
-**`AudioDeviceBroker.mDeviceStateLock` → `AudioDeviceInventory.mDevicesLock`** (30×)  
-- holds `AudioDeviceBroker.mDeviceStateLock` at `services/core/java/com/android/server/audio/AudioDeviceBroker.java:2086`  
-- path: `AudioDeviceBroker$BrokerHandler.handleMessage  ->  AudioDeviceInventory.onMakeHearingAidDeviceUnavailableNow`  
-- acquires `AudioDeviceInventory.mDevicesLock` at `services/core/java/com/android/server/audio/AudioDeviceInventory.java:299` — `synchronized (mDevicesLock) {`  
-
-**`AudioDeviceInventory.mDevicesLock` → `AudioDeviceBroker.mBluetoothAudioStateLock`** (4×)  
-- holds `AudioDeviceInventory.mDevicesLock` at `services/core/java/com/android/server/audio/AudioDeviceInventory.java:1060`  
-- path: `AudioDeviceInventory.onSetBtActiveDevice  ->  AudioDeviceInventory.makeLeAudioDeviceAvailable  ->  AudioDeviceBroker.clearLeAudioSuspended`  
-- acquires `AudioDeviceBroker.mBluetoothAudioStateLock` at `services/core/java/com/android/server/audio/AudioDeviceBroker.java:1174` — `synchronized (mBluetoothAudioStateLock) {`  
-
-**`AudioDeviceInventory.mDevicesLock` → `AudioDeviceBroker.mDeviceStateLock`** (4×)  
-- holds `AudioDeviceInventory.mDevicesLock` at `services/core/java/com/android/server/audio/AudioDeviceInventory.java:1197`  
-- path: `AudioDeviceInventory.onMakeA2dpDeviceUnavailableNow  ->  AudioDeviceInventory.makeA2dpDeviceUnavailableNow  ->  AudioDeviceBroker.clearAvrcpAbsoluteVolumeSupported  ->  AudioDeviceBroker.setAvrcpAbsoluteVolumeSupported`  
-- acquires `AudioDeviceBroker.mDeviceStateLock` at `services/core/java/com/android/server/audio/AudioDeviceBroker.java:264` — `synchronized (mDeviceStateLock) {`  
-
----
-
-## 15. `ListenerMultiplexer.mMultiplexerLock` ⇄ `DelegateLocationProvider.mInitializationLock` ⇄ `MockableLocationProvider.mOwnerLock`
-
-![candidate 15](findings/cand15.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`ListenerMultiplexer.mMultiplexerLock` → `DelegateLocationProvider.mInitializationLock`** (5×)  
-- holds `ListenerMultiplexer.mMultiplexerLock` at `services/core/java/com/android/server/location/provider/LocationProviderManager.java:1776`  
-- path: `LocationProviderManager.setMockProvider  ->  MockableLocationProvider.setMockProvider  ->  MockableLocationProvider.setProviderLocked  ->  AbstractLocationProvider.setState  ->  StationaryThrottlingLocationProvider.onStateChanged  ->  DelegateLocationProvider.onStateChanged  ->  DelegateLocationProvider.waitForInitialization`  
-- acquires `DelegateLocationProvider.mInitializationLock` at `services/core/java/com/android/server/location/provider/DelegateLocationProvider.java:55` — `synchronized (mInitializationLock) {`  
-
-**`ListenerMultiplexer.mMultiplexerLock` → `MockableLocationProvider.mOwnerLock`** (15×)  
-- holds `ListenerMultiplexer.mMultiplexerLock` at `services/core/java/com/android/server/location/listeners/ListenerMultiplexer.java:642`  
-- path: `ListenerMultiplexer.dump  ->  LocationProviderManager.getServiceState  ->  MockableLocationProvider.getCurrentRequest`  
-- acquires `MockableLocationProvider.mOwnerLock` at `services/core/java/com/android/server/location/provider/MockableLocationProvider.java:88` — `synchronized (mOwnerLock) {`  
-
-**`DelegateLocationProvider.mInitializationLock` → `ListenerMultiplexer.mMultiplexerLock`** (1×)  
-- holds `DelegateLocationProvider.mInitializationLock` at `services/core/java/com/android/server/location/provider/DelegateLocationProvider.java:57`  
-- path: `DelegateLocationProvider.initializeDelegate  ->  AbstractLocationProvider.setState  ->  LocationProviderManager.onStateChanged  ->  ListenerMultiplexer.updateRegistrations`  
-- acquires `ListenerMultiplexer.mMultiplexerLock` at `services/core/java/com/android/server/location/listeners/ListenerMultiplexer.java:266` — `synchronized (mMultiplexerLock) {`  
-
-**`DelegateLocationProvider.mInitializationLock` → `MockableLocationProvider.mOwnerLock`** (1×)  
-- holds `DelegateLocationProvider.mInitializationLock` at `services/core/java/com/android/server/location/provider/DelegateLocationProvider.java:57`  
-- path: `DelegateLocationProvider.initializeDelegate  ->  AbstractLocationProvider.setState  ->  MockableLocationProvider$ListenerWrapper.onStateChanged`  
-- acquires `MockableLocationProvider.mOwnerLock` at `services/core/java/com/android/server/location/provider/MockableLocationProvider.java:88` — `synchronized (mOwnerLock) {`  
-
-**`MockableLocationProvider.mOwnerLock` → `ListenerMultiplexer.mMultiplexerLock`** (2×)  
-- holds `MockableLocationProvider.mOwnerLock` at `services/core/java/com/android/server/location/provider/MockableLocationProvider.java:189`  
-- path: `MockableLocationProvider.setMockProviderAllowed  ->  MockLocationProvider.setProviderAllowed  ->  AbstractLocationProvider.setAllowed  ->  AbstractLocationProvider.setState  ->  LocationProviderManager.onStateChanged  ->  ListenerMultiplexer.updateRegistrations`  
-- acquires `ListenerMultiplexer.mMultiplexerLock` at `services/core/java/com/android/server/location/listeners/ListenerMultiplexer.java:266` — `synchronized (mMultiplexerLock) {`  
-
-**`MockableLocationProvider.mOwnerLock` → `DelegateLocationProvider.mInitializationLock`** (2×)  
-- holds `MockableLocationProvider.mOwnerLock` at `services/core/java/com/android/server/location/provider/MockableLocationProvider.java:189`  
-- path: `MockableLocationProvider.setMockProviderAllowed  ->  MockLocationProvider.setProviderAllowed  ->  AbstractLocationProvider.setAllowed  ->  AbstractLocationProvider.setState  ->  StationaryThrottlingLocationProvider.onStateChanged  ->  DelegateLocationProvider.onStateChanged  ->  DelegateLocationProvider.waitForInitialization`  
-- acquires `DelegateLocationProvider.mInitializationLock` at `services/core/java/com/android/server/location/provider/DelegateLocationProvider.java:55` — `synchronized (mInitializationLock) {`  
-
----
-
-## 16. `ThermalManagerService$TemperatureWatcher.mSamples` ⇄ `ThermalManagerService$ThermalHalWrapper.mHalLock` ⇄ `ThermalManagerService.mLock`
-
-![candidate 16](findings/cand16.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`ThermalManagerService$TemperatureWatcher.mSamples` → `ThermalManagerService$ThermalHalWrapper.mHalLock`** (9×)  
-- holds `ThermalManagerService$TemperatureWatcher.mSamples` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:204`  
-- path: `ThermalManagerService$1.onThresholdChanged  ->  ThermalManagerService$TemperatureWatcher.getHeadroomCallbackDataLocked  ->  ThermalManagerService$TemperatureWatcher.getForecast  ->  ThermalManagerService$ThermalHalAidlWrapper.forecastSkinTemperature`  
-- acquires `ThermalManagerService$ThermalHalWrapper.mHalLock` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:1202` — `synchronized (mHalLock) {`  
-
-**`ThermalManagerService$ThermalHalWrapper.mHalLock` → `ThermalManagerService$TemperatureWatcher.mSamples`** (2×)  
-- holds `ThermalManagerService$ThermalHalWrapper.mHalLock` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:1219`  
-- path: `ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied  ->  ThermalManagerService$ThermalHalWrapper.resendCurrentTemperatures  ->  ThermalManagerService$1.onTemperatureChanged  ->  ThermalManagerService.-$$Nest$monTemperatureChanged  ->  ThermalManagerService.onTemperatureChanged`  
-- acquires `ThermalManagerService$TemperatureWatcher.mSamples` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:191` — `synchronized (mTemperatureWatcher.mSamples) {`  
-
-**`ThermalManagerService$ThermalHalWrapper.mHalLock` → `ThermalManagerService.mLock`** (2×)  
-- holds `ThermalManagerService$ThermalHalWrapper.mHalLock` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:1219`  
-- path: `ThermalManagerService$ThermalHalWrapper$DeathRecipient.serviceDied  ->  ThermalManagerService$ThermalHalWrapper.resendCurrentTemperatures  ->  ThermalManagerService$1.onTemperatureChanged  ->  ThermalManagerService.-$$Nest$monTemperatureChanged  ->  ThermalManagerService.onTemperatureChanged`  
-- acquires `ThermalManagerService.mLock` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:197` — `synchronized (mLock) {`  
-
-**`ThermalManagerService.mLock` → `ThermalManagerService$ThermalHalWrapper.mHalLock`** (4×)  
-- holds `ThermalManagerService.mLock` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:258`  
-- path: `ThermalManagerService.onActivityManagerReady  ->  ThermalManagerService$ThermalHalAidlWrapper.connectToHal`  
-- acquires `ThermalManagerService$ThermalHalWrapper.mHalLock` at `services/core/java/com/android/server/power/thermal/ThermalManagerService.java:1202` — `synchronized (mHalLock) {`  
-
----
-
-## 17. `LocationTimeZoneProvider.mSharedLock` ⇄ `LocationTimeZoneProviderController.mSharedLock` ⇄ `LocationTimeZoneProviderProxy.mSharedLock`
-
-![candidate 17](findings/cand17.png)
-
-Opposite-order acquisitions of the locks above. Each edge below is "hold the first lock, then reach an acquisition of the second":
-
-**`LocationTimeZoneProvider.mSharedLock` → `LocationTimeZoneProviderController.mSharedLock`** (8×)  
-- holds `LocationTimeZoneProvider.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProvider.java:492`  
-- path: `LocationTimeZoneProvider.destroy  ->  LocationTimeZoneProvider.setCurrentState  ->  LocationTimeZoneProviderController$$ExternalSyntheticLambda0.onProviderStateChange  ->  LocationTimeZoneProviderController.onProviderStateChange`  
-- acquires `LocationTimeZoneProviderController.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProviderController.java:197` — `synchronized (mSharedLock) {`  
-
-**`LocationTimeZoneProvider.mSharedLock` → `LocationTimeZoneProviderProxy.mSharedLock`** (12×)  
-- holds `LocationTimeZoneProvider.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProvider.java:492`  
-- path: `LocationTimeZoneProvider.destroy  ->  BinderLocationTimeZoneProvider.onDestroy  ->  LocationTimeZoneProviderProxy.destroy`  
-- acquires `LocationTimeZoneProviderProxy.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProviderProxy.java:78` — `synchronized (mSharedLock) {`  
-
-**`LocationTimeZoneProviderController.mSharedLock` → `LocationTimeZoneProvider.mSharedLock`** (16×)  
-- holds `LocationTimeZoneProviderController.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProviderController.java:851`  
-- path: `LocationTimeZoneProviderController.clearRecordedStates  ->  LocationTimeZoneProvider.clearRecordedStates`  
-- acquires `LocationTimeZoneProvider.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProvider.java:442` — `synchronized (mSharedLock) {`  
-
-**`LocationTimeZoneProviderController.mSharedLock` → `LocationTimeZoneProviderProxy.mSharedLock`** (9×)  
-- holds `LocationTimeZoneProviderController.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProviderController.java:275`  
-- path: `LocationTimeZoneProviderController.destroy  ->  LocationTimeZoneProvider.destroy  ->  BinderLocationTimeZoneProvider.onDestroy  ->  LocationTimeZoneProviderProxy.destroy`  
-- acquires `LocationTimeZoneProviderProxy.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProviderProxy.java:78` — `synchronized (mSharedLock) {`  
-
-**`LocationTimeZoneProviderProxy.mSharedLock` → `LocationTimeZoneProvider.mSharedLock`** (2×)  
-- holds `LocationTimeZoneProviderProxy.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/RealLocationTimeZoneProviderProxy.java:113`  
-- path: `RealLocationTimeZoneProviderProxy.onBind  ->  BinderLocationTimeZoneProvider$1.onProviderBound  ->  BinderLocationTimeZoneProvider.-$$Nest$mhandleOnProviderBound  ->  BinderLocationTimeZoneProvider.handleOnProviderBound`  
-- acquires `LocationTimeZoneProvider.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/BinderLocationTimeZoneProvider.java:85` — `synchronized (mSharedLock) {`  
-
-**`LocationTimeZoneProviderProxy.mSharedLock` → `LocationTimeZoneProviderController.mSharedLock`** (1×)  
-- holds `LocationTimeZoneProviderProxy.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/RealLocationTimeZoneProviderProxy.java:128`  
-- path: `RealLocationTimeZoneProviderProxy.onUnbind  ->  BinderLocationTimeZoneProvider$1.onProviderUnbound  ->  LocationTimeZoneProvider.handleTemporaryFailure  ->  LocationTimeZoneProvider.setCurrentState  ->  LocationTimeZoneProviderController$$ExternalSyntheticLambda0.onProviderStateChange  ->  LocationTimeZoneProviderController.onProviderStateChange`  
-- acquires `LocationTimeZoneProviderController.mSharedLock` at `services/core/java/com/android/server/timezonedetector/location/LocationTimeZoneProviderController.java:197` — `synchronized (mSharedLock) {`  
-
----
+The first four rows are the headline reason to run `verify` and read the source:
+field-granular lock identity over-reports exactly when a singleton lock is handed
+around by reference. lockdex never *invents* a lock, but it will split one shared
+monitor into several — which a short source read collapses.
