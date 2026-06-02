@@ -1,0 +1,105 @@
+//! lockdex — static lock-order / deadlock analyzer for AOSP, from DEX bytecode.
+// Staged build: some model fields/APIs are forward-declared for later stages.
+#![allow(dead_code)]
+
+mod analyze;
+mod dexdump;
+mod export;
+mod graph;
+mod input;
+mod juc;
+mod model;
+mod report;
+
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand};
+use std::path::{Path, PathBuf};
+
+#[derive(Parser)]
+#[command(name = "lockdex", about = "Static lock-order / deadlock analyzer (DEX-based)")]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Analyze a dex / jar / Soong out dir and report lock-order deadlocks.
+    Analyze {
+        /// .dex, .jar/.apk (multidex), or a Soong `out` directory
+        input: PathBuf,
+        /// output format for stdout: text | json | dot
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// write the full artifact set (report, json, dot, svg, pprof, hprof) here
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// narrow a Soong out dir to jars whose name contains this (e.g. services)
+        #[arg(long)]
+        scope: Option<String>,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.cmd {
+        Cmd::Analyze { input, format, out_dir, scope } => {
+            let t0 = std::time::Instant::now();
+            let set = input::resolve(&input, scope.as_deref())?;
+            eprintln!("[lockdex] {} dex file(s)", set.files.len());
+            let dex = input::parse_all(&set)?;
+            eprintln!(
+                "[lockdex] parsed {} classes in {:.1}s",
+                dex.classes.len(),
+                t0.elapsed().as_secs_f64()
+            );
+            let an = analyze::analyze(&dex);
+            let g = graph::LockGraph::build(&an.edges, &an.all_locks);
+            let rep = report::build_json(&an, &g);
+            eprintln!(
+                "[lockdex] {} methods, {} locks, {} edges, {} deadlock cycles, {} suppressed ({:.1}s)",
+                rep.method_count, rep.node_count, rep.edge_count,
+                rep.cycles.len(), rep.suppressed.len(), t0.elapsed().as_secs_f64()
+            );
+
+            if let Some(dir) = &out_dir {
+                write_artifacts(dir, &an, &g, &rep)?;
+            }
+
+            match format.as_str() {
+                "json" => println!("{}", serde_json::to_string_pretty(&rep)?),
+                "dot" => print!("{}", report::dot(&g)),
+                "none" => {}
+                _ => print!("{}", report::text(&rep)),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_artifacts(
+    dir: &Path,
+    an: &analyze::Analysis,
+    g: &graph::LockGraph,
+    rep: &report::JsonReport,
+) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("mkdir {}", dir.display()))?;
+    let p = |name: &str| dir.join(name);
+
+    std::fs::write(p("report.txt"), report::text(rep))?;
+    std::fs::write(p("deadlock_cycles.txt"), report::text(rep))?;
+    std::fs::write(p("lockgraph.json"), serde_json::to_string_pretty(rep)?)?;
+    let dot = report::dot(g);
+    std::fs::write(p("lockgraph.dot"), &dot)?;
+    export::write_file(&p("lockorder.pb.gz"), &export::pprof_lock_order(g))?;
+    export::write_file(&p("methodlock.hprof"), &export::hprof_method_graph(an))?;
+
+    // best-effort SVG via graphviz, if present.
+    if let Ok(out) = std::process::Command::new("dot").arg("-Tsvg").arg(p("lockgraph.dot")).output() {
+        if out.status.success() {
+            let _ = std::fs::write(p("lockgraph.svg"), out.stdout);
+        }
+    }
+    eprintln!("[lockdex] artifacts written to {}", dir.display());
+    Ok(())
+}

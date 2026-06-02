@@ -1,0 +1,20 @@
+[package]
+name = "lockdex"
+version = "0.1.0"
+edition = "2021"
+description = "Precise static lock-order / deadlock analyzer for AOSP, working from DEX bytecode."
+
+[[bin]]
+name = "lockdex"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rayon = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
