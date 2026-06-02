@@ -72,6 +72,64 @@ pub struct Analysis {
     /// method dependency graph: (caller method, lock held at the call, callee).
     /// Powers the Perfetto/pprof method-graph view (a call made while holding L).
     pub method_edges: Vec<(String, String, String)>,
+    /// call graph + reachability, for `verify` to show the path of an edge.
+    pub paths: PathIndex,
+}
+
+/// Enough of the call graph to reconstruct, for an order edge `A -> B`, the
+/// shortest call chain from the method holding `A` to the method that acquires
+/// `B`. Built from the resolved (RTA) call graph and the mayAcquire fixpoint.
+pub struct PathIndex {
+    /// method key -> its (non-async) resolved callee method keys.
+    callees: HashMap<String, Vec<String>>,
+    /// method key -> lock names it may (transitively) acquire.
+    may: HashMap<String, Vec<Lock>>,
+    /// method key -> lock names it acquires *directly*.
+    direct: HashMap<String, HashSet<String>>,
+}
+
+impl PathIndex {
+    /// Shortest call chain `[holder, …, acquirer]` such that the last method
+    /// directly acquires `target`, walking only callees that can reach it.
+    pub fn path_to(&self, start: &str, target: &str, max_depth: usize) -> Option<Vec<String>> {
+        if self.direct.get(start).map(|s| s.contains(target)).unwrap_or(false) {
+            return Some(vec![start.to_string()]);
+        }
+        use std::collections::VecDeque;
+        let mut q: VecDeque<(String, usize)> = VecDeque::new();
+        let mut prev: HashMap<String, String> = HashMap::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        q.push_back((start.to_string(), 0));
+        seen.insert(start.to_string());
+        while let Some((m, d)) = q.pop_front() {
+            if d >= max_depth {
+                continue;
+            }
+            let Some(cs) = self.callees.get(&m) else { continue };
+            for c in cs {
+                if seen.contains(c) {
+                    continue;
+                }
+                if self.direct.get(c).map(|s| s.contains(target)).unwrap_or(false) {
+                    prev.insert(c.clone(), m.clone());
+                    let mut path = vec![c.clone()];
+                    let mut cur = c.clone();
+                    while let Some(p) = prev.get(&cur) {
+                        path.push(p.clone());
+                        cur = p.clone();
+                    }
+                    path.reverse();
+                    return Some(path);
+                }
+                if self.may.get(c).map(|v| v.iter().any(|l| l.name() == target)).unwrap_or(false) {
+                    seen.insert(c.clone());
+                    prev.insert(c.clone(), m.clone());
+                    q.push_back((c.clone(), d + 1));
+                }
+            }
+        }
+        None
+    }
 }
 
 pub fn analyze(dex: &Dex) -> Analysis {
@@ -140,7 +198,37 @@ pub fn analyze(dex: &Dex) -> Analysis {
         edges.len(), all_locks.len(), tea.elapsed().as_secs_f64()
     );
 
-    Analysis { edges, all_locks, method_count: by_key.len(), method_edges }
+    // --- path index (call graph + direct/transitive acquires) for `verify` ---
+    let mut callees: HashMap<String, Vec<String>> = HashMap::new();
+    let mut direct: HashMap<String, HashSet<String>> = HashMap::new();
+    for (k, s) in &by_key {
+        let mut cs: Vec<String> = Vec::new();
+        if let Some(rv) = resolved.get(k) {
+            for (ci, call) in s.calls.iter().enumerate() {
+                if call.is_async {
+                    continue;
+                }
+                if let Some(c) = rv.get(ci) {
+                    for x in c {
+                        if !cs.contains(x) {
+                            cs.push(x.clone());
+                        }
+                    }
+                }
+            }
+        }
+        callees.insert(k.clone(), cs);
+        let d: HashSet<String> = s
+            .acquires
+            .iter()
+            .filter(|l| !l.is_opaque())
+            .map(|l| ground(l, &s.class, k).name())
+            .collect();
+        direct.insert(k.clone(), d);
+    }
+    let paths = PathIndex { callees, may, direct };
+
+    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths }
 }
 
 /// Assemble one method's contribution to the lock-order graph (pure / parallel).

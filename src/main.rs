@@ -111,7 +111,7 @@ fn main() -> Result<()> {
                 "[lockdex] {} cycles; verifying those with <= {} locks against {}",
                 rep.cycles.len(), max_locks, src_root.display()
             );
-            let txt = verify::run(&rep, &src_root, max_locks);
+            let txt = verify::run(&rep, &an.paths, &src_root, max_locks);
             match out {
                 Some(p) => {
                     std::fs::write(&p, &txt)?;

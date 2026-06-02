@@ -79,15 +79,30 @@ fn rel(p: &Path, root: &Path) -> String {
     p.strip_prefix(root).unwrap_or(p).to_string_lossy().to_string()
 }
 
-/// `"a.b.C$1.m:(...)V:1507 (interproc)"` -> (class `a.b.C$1`, line 1507)
-fn parse_sample(s: &str) -> Option<(String, usize)> {
+/// `"a.b.C$1.m:(...)V:1507 (interproc)"` -> (method key `a.b.C$1.m:(...)V`,
+/// class `a.b.C$1`, line 1507)
+fn parse_sample(s: &str) -> Option<(String, String, usize)> {
     let s = s.split(" (").next().unwrap_or(s);
     let colon = s.rfind(':')?;
     let line: usize = s[colon + 1..].parse().ok()?;
-    let methodkey = &s[..colon]; // a.b.C$1.m:(...)V
-    let class_method = methodkey.split(':').next()?; // a.b.C$1.m
+    let methodkey = s[..colon].to_string(); // a.b.C$1.m:(...)V
+    let class_method = methodkey.split(':').next().unwrap_or(&methodkey).to_string(); // a.b.C$1.m
     let dot = class_method.rfind('.')?;
-    Some((class_method[..dot].to_string(), line))
+    let class = class_method[..dot].to_string();
+    Some((methodkey, class, line))
+}
+
+/// `a.b.C$1.m:(...)V` -> `C$1.m` for compact path display.
+fn short_method(key: &str) -> String {
+    let cm = key.split(':').next().unwrap_or(key); // a.b.C$1.m
+    match cm.rfind('.') {
+        Some(dot) => {
+            let method = &cm[dot + 1..];
+            let cls = cm[..dot].rsplit('.').next().unwrap_or(&cm[..dot]);
+            format!("{cls}.{method}")
+        }
+        None => cm.to_string(),
+    }
 }
 
 /// A lock display name -> (declaring class, what to grep for at its acquisition).
@@ -105,7 +120,7 @@ fn lock_target(name: &str) -> Option<(String, String)> {
     Some((base[..dot].to_string(), base[dot + 1..].to_string()))
 }
 
-pub fn run(report: &JsonReport, root: &Path, max_locks: usize) -> String {
+pub fn run(report: &JsonReport, paths: &crate::analyze::PathIndex, root: &Path, max_locks: usize) -> String {
     let mut src = Source::index(root);
     let mut out = String::new();
     let cycles: Vec<_> = report.cycles.iter().filter(|c| c.locks.len() <= max_locks).collect();
@@ -127,12 +142,13 @@ pub fn run(report: &JsonReport, root: &Path, max_locks: usize) -> String {
         let mut edges_ok = 0;
         for e in &c.edges {
             let _ = writeln!(out, "\n   {}  ->  {}   [{}x]", e.from, e.to, e.count);
+            let parsed = e.sample.as_deref().and_then(parse_sample);
             // (a) the edge site: where `from` is held and the call is made.
             let mut site_ok = false;
-            if let Some((class, line)) = e.sample.as_deref().and_then(parse_sample) {
-                if let Some(f) = src.file_for(&class) {
+            if let Some((_, class, line)) = &parsed {
+                if let Some(f) = src.file_for(class) {
                     let _ = writeln!(out, "      hold {} at  {}:{}", e.from, rel(&f, root), line);
-                    let async_here = print_ctx(&mut out, src.lines(&f), line, 6, 3);
+                    let async_here = print_ctx(&mut out, src.lines(&f), *line, 6, 3);
                     site_ok = true;
                     if async_here {
                         let _ = writeln!(out, "        ^ note: an async post is nearby — confirm the lock is held when the runnable runs");
@@ -141,17 +157,34 @@ pub fn run(report: &JsonReport, root: &Path, max_locks: usize) -> String {
                     let _ = writeln!(out, "      (source for {class} not found under root)");
                 }
             }
-            // (b) follow to where `to` is acquired.
+            // (b) the call path from the holder down to where `to` is acquired.
             let mut tgt_ok = false;
-            if let Some((tclass, field)) = lock_target(&e.to) {
-                if let Some(f) = src.file_for(&tclass) {
-                    let sites = acquire_sites(src.lines(&f), &field);
-                    if !sites.is_empty() {
-                        let _ = writeln!(out, "      acquire {} at  {}:", e.to, rel(&f, root));
-                        for (ln, txt) in sites.iter().take(3) {
-                            let _ = writeln!(out, "        {ln:>5}  {}", txt.trim());
+            if let Some((mkey, _, _)) = &parsed {
+                match paths.path_to(mkey, &e.to, 16) {
+                    Some(p) => {
+                        let chain: Vec<String> = p.iter().map(|m| short_method(m)).collect();
+                        let _ = writeln!(out, "      path  {}", chain.join("  ->  "));
+                        // show the synchronized site in the final (acquiring) method's class.
+                        if let (Some(last), Some((tclass, field))) =
+                            (p.last(), lock_target(&e.to))
+                        {
+                            let _ = tclass; // the acquiring method's own class is authoritative
+                            let acq_class = last.split(':').next()
+                                .and_then(|cm| cm.rfind('.').map(|d| cm[..d].to_string()));
+                            if let Some(f) = acq_class.as_deref().and_then(|c| src.file_for(c)) {
+                                let sites = acquire_sites(src.lines(&f), &field);
+                                if let Some((ln, txt)) = sites.first() {
+                                    let _ = writeln!(
+                                        out, "      acquire {} at  {}:{}  {}",
+                                        e.to, rel(&f, root), ln, txt.trim()
+                                    );
+                                }
+                            }
                         }
                         tgt_ok = true;
+                    }
+                    None => {
+                        let _ = writeln!(out, "      path  (not reconstructed — chain too deep or via an over-approximated call)");
                     }
                 }
             }
@@ -198,6 +231,10 @@ fn print_ctx(out: &mut String, lines: &[String], line: usize, before: usize, aft
 fn acquire_sites(lines: &[String], field: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     for (i, l) in lines.iter().enumerate() {
+        let t = l.trim_start();
+        if t.starts_with('*') || t.starts_with("//") || t.starts_with("/*") {
+            continue; // skip comments / javadoc that merely mention the lock
+        }
         let is_sync = l.contains("synchronized");
         let is_juc = l.contains(".lock(") || l.contains(".writeLock(") || l.contains(".readLock(");
         if (is_sync || is_juc) && contains_word(l, field) {
