@@ -269,10 +269,9 @@ fn held_dataflow(m: &Method, effect: &[Option<Effect>], seed: Vec<Lock>) -> Vec<
     // whole `try` is still held in the `catch`.
     for &(start, end, handler) in &m.catches {
         let Some(&h) = index.get(&handler) else { continue };
-        for i in 0..n {
-            let off = m.insns[i].offset;
-            if off >= start && off < end && !succ[i].contains(&h) {
-                succ[i].push(h);
+        for (s, insn) in succ.iter_mut().zip(&m.insns) {
+            if (start..end).contains(&insn.offset) && !s.contains(&h) {
+                s.push(h);
             }
         }
     }
