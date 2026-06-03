@@ -151,7 +151,7 @@ pub struct Analysis {
 pub struct PathIndex {
     /// method key -> its (non-async) resolved callee method keys.
     callees: HashMap<String, Vec<String>>,
-    /// method key -> lock names it may (transitively) acquire.
+    /// method key -> locks it may (transitively) acquire.
     may: HashMap<String, Vec<Lock>>,
     /// method key -> lock names it acquires *directly*.
     direct: HashMap<String, HashSet<String>>,
@@ -255,8 +255,7 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         }
         // (b) constructor-parameter assignments, resolved at construction sites
         for s in by_key.values() {
-            for (site, ctor_key, args) in &s.alloc_inits {
-                let _ = site;
+            for (_site, ctor_key, args) in &s.alloc_inits {
                 let Some(caps) = ctor_captures.get(ctor_key) else { continue };
                 for (key, formal) in caps {
                     let arg = args.get(*formal as usize).and_then(|o| o.clone());
@@ -338,6 +337,9 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         method_edges.extend(me);
         all_locks.extend(locks);
     }
+    // total order so the method-graph exports (hprof / per-cycle pprof) are
+    // reproducible; within a method the edge order is otherwise unspecified.
+    method_edges.sort();
     eprintln!(
         "[lockdex] assembled {} order edges over {} locks in {:.1}s",
         edges.len(), all_locks.len(), tea.elapsed().as_secs_f64()

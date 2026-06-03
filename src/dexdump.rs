@@ -100,7 +100,9 @@ pub fn parse_dexdump_text(text: &str) -> Dex {
     let mut cur_method: Option<Method> = None;
     let mut source_file: Option<String> = None;
     // Header fields appear BEFORE the `[addr] FQN` body line that creates the
-    // method, so they are stashed and applied at method creation.
+    // method, so they are stashed and applied at method creation. dexdump always
+    // emits one such header per method, so each field is overwritten before the
+    // next method is created — no reset at method/class boundaries is needed.
     let mut pending_access: u32 = 0;
     let mut pending_registers: u32 = 0;
     let mut pending_ins: u32 = 0;
@@ -384,7 +386,7 @@ fn parse_invoke(mnem: &str, rest: &str) -> Op {
         Some(c) => c,
         None => return Op::Other,
     };
-    let regs_str = &rest[..close].trim_start_matches('{');
+    let regs_str = rest[..close].trim_start_matches('{');
     let args = parse_reg_list(regs_str);
     let mref = rest[close + 1..].trim_start_matches(',').trim();
     match parse_method_ref(mref) {

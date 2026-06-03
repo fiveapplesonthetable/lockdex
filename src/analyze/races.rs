@@ -229,8 +229,9 @@ pub(super) fn compute(
         if st.writes == 0 {
             continue;
         }
-        let every: Vec<String> =
+        let mut every: Vec<String> =
             st.write_guard.iter().filter(|(_, &c)| c == st.writes).map(|(l, _)| l.clone()).collect();
+        every.sort(); // deterministic guard set (write_guard iteration is unordered)
         let accept = if !every.is_empty() {
             every
         } else {

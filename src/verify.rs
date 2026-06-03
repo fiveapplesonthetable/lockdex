@@ -198,11 +198,12 @@ pub fn run(
                     Some(p) => {
                         let chain: Vec<String> = p.iter().map(|m| short_method(m)).collect();
                         let _ = writeln!(out, "      path  {}", chain.join("  ->  "));
-                        // show the synchronized site in the final (acquiring) method's class.
-                        if let (Some(last), Some((tclass, field))) =
+                        // Show the synchronized site in the final (acquiring)
+                        // method's own class — which is authoritative — so we
+                        // ignore the lock's nominal target class here.
+                        if let (Some(last), Some((_tclass, field))) =
                             (p.last(), lock_target(&e.to))
                         {
-                            let _ = tclass; // the acquiring method's own class is authoritative
                             let acq_class = last.split(':').next()
                                 .and_then(|cm| cm.rfind('.').map(|d| cm[..d].to_string()));
                             if let Some(f) = acq_class.as_deref().and_then(|c| src.file_for(c)) {

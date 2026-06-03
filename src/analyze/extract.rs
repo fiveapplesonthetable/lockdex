@@ -342,7 +342,14 @@ fn held_dataflow(m: &Method, effect: &[Option<Effect>], seed: Vec<Lock>) -> Vec<
 
     entry
         .into_iter()
-        .map(|set| set.map(|c| c.into_keys().collect()).unwrap_or_default())
+        .map(|set| {
+            // Sort the held-set into a stable order: it is otherwise a HashMap's
+            // key order, and consumers that pick a representative (the method-graph
+            // export takes `held.last()`) would then vary run to run.
+            let mut v: Vec<Lock> = set.map(|c| c.into_keys().collect()).unwrap_or_default();
+            v.sort_by_key(|l| l.name());
+            v
+        })
         .collect()
 }
 

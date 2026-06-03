@@ -21,6 +21,12 @@ use crate::source::{class_path, esc, short_lock, short_method, snippet, Source};
 use std::fmt::Write as _;
 use std::path::Path;
 
+/// Short-display a guard, which may be a composite `A | B` set (locks co-held by
+/// every write); shorten each member rather than the joined string as a whole.
+fn short_guard(guard: &str) -> String {
+    guard.split(" | ").map(short_lock).collect::<Vec<_>>().join(" | ")
+}
+
 /// Which fields to report. `min_coverage` is the baseline: the percentage of a
 /// field's writes that must share the guard before the rest count as violations.
 /// `min_writes` is the smallest number of writes worth considering.
@@ -87,7 +93,7 @@ pub fn report(an: &Analysis, filter: &Filter, src_root: Option<&Path>, out_dir: 
 
     for (i, f) in fields.iter().enumerate() {
         let writes_v = f.violations.iter().filter(|v| v.write).count();
-        let _ = writeln!(md, "## `{}` — guarded by `{}`\n", short_lock(&f.field), short_lock(&f.guard));
+        let _ = writeln!(md, "## `{}` — guarded by `{}`\n", short_lock(&f.field), short_guard(&f.guard));
         let _ = writeln!(
             md,
             "- guarded on **{}/{}** writes; {} read(s); **{}** access(es) miss the guard ({} write).",
@@ -136,7 +142,7 @@ fn field_dot(f: &FieldRace) -> String {
          edge [fontname=\"Helvetica\", fontsize=9, arrowsize=0.8];\n",
     );
     let _ = writeln!(s, "  \"__field__\" [{FIELD_NODE}, label=\"{}\"];", esc(&short_lock(&f.field)));
-    let _ = writeln!(s, "  \"__guard__\" [{GUARD_NODE}, label=\"{}\"];", esc(&short_lock(&f.guard)));
+    let _ = writeln!(s, "  \"__guard__\" [{GUARD_NODE}, label=\"{}\"];", esc(&short_guard(&f.guard)));
     let _ = writeln!(
         s,
         "  \"__guard__\" -> \"__field__\" [label=\" guards {}/{}\", color=\"#16a34a\", fontcolor=\"#15803d\", penwidth=1.6];",

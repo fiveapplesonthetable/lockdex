@@ -287,7 +287,7 @@ fn main() -> Result<()> {
 /// Concise stdout when `--out-dir` is used: what was found + which files hold it.
 fn outputs_summary(dir: &Path, rep: &report::JsonReport) -> String {
     use std::fmt::Write as _;
-    let small = rep.cycles.iter().filter(|c| c.locks.len() <= 12).count();
+    let small = rep.cycles.iter().filter(|c| c.locks.len() <= report::TANGLE).count();
     let tangles = rep.cycles.len() - small;
     let mut s = String::new();
     let _ = writeln!(

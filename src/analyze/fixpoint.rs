@@ -24,6 +24,10 @@ use std::collections::{HashMap, HashSet};
 /// stops growing — sound (under-approximation) and keeps the fixpoint near-linear.
 const MAY_CAP: usize = 96;
 
+/// Round bound for the Jacobi fixpoint. The lattice is finite and saturation is
+/// monotone, so it converges well within this; the cap is a determinism backstop.
+const MAX_ROUNDS: usize = 25;
+
 pub(super) fn may_acquire(
     by_key: &HashMap<String, Summary>,
     resolved: &HashMap<String, Vec<Vec<String>>>,
@@ -38,7 +42,7 @@ pub(super) fn may_acquire(
     keys.sort(); // stable index order -> reproducible saturation under MAY_CAP
 
     let mut iters = 0;
-    while iters < 25 {
+    while iters < MAX_ROUNDS {
         // Jacobi round: each method's additions computed in parallel against the
         // previous round's `may` (read-only), then applied deterministically.
         let mut additions: Vec<(usize, Vec<Lock>)> = keys
@@ -81,7 +85,7 @@ pub(super) fn may_acquire(
         }
         additions.sort_by_key(|(ki, _)| *ki);
         for (ki, v) in additions {
-            let set = may.get_mut(&keys[ki]).unwrap();
+            let set = may.get_mut(&keys[ki]).expect("ki indexes keys, which key `may`");
             for l in v {
                 if set.len() >= MAY_CAP {
                     break;

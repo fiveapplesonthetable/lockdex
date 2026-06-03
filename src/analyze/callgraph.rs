@@ -19,7 +19,6 @@ use super::{RawCall, Summary};
 use crate::model::*;
 use std::collections::{HashMap, HashSet};
 
-
 /// A virtual/interface site with more than this many instantiated candidate
 /// targets is treated as *megamorphic*: we resolve it to the declared target only
 /// (if that has a body), otherwise to nothing. Dropping the fan-out is sound — an

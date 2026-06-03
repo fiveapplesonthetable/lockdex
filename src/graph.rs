@@ -42,18 +42,21 @@ impl LockGraph {
             adj: Vec::new(),
             evidence: HashMap::new(),
         };
+        // Intern every node (edge endpoints + isolated/extra locks) in name-sorted
+        // order *before* recording edges, so node indices — and every index-derived
+        // artifact (JSON node list, DOT, sorted_evidence) — are reproducible
+        // regardless of the parallel edge-collection order.
+        let mut all: Vec<&Lock> =
+            edges.iter().flat_map(|e| [&e.from, &e.to]).chain(extra_nodes.iter()).collect();
+        all.sort_by_key(|l| l.name());
+        for l in all {
+            g.intern(l);
+        }
         for e in edges {
-            let a = g.intern(&e.from);
-            let b = g.intern(&e.to);
+            let a = g.index_of[&e.from];
+            let b = g.index_of[&e.to];
             g.adj[a].insert(b);
             g.evidence.entry((a, b)).or_default().push(e.clone());
-        }
-        // include isolated locks (e.g. opaque / singly-held) so exports are
-        // complete; sorted so the node order — and every artifact — is reproducible.
-        let mut extra: Vec<&Lock> = extra_nodes.iter().collect();
-        extra.sort_by_key(|l| l.name());
-        for l in extra {
-            g.intern(l);
         }
         g
     }

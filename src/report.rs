@@ -20,6 +20,15 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
+/// An SCC larger than this is reported as a "lock tangle" summary rather than a
+/// full per-edge dump — it reflects a globally interconnected lock hierarchy, not
+/// a single actionable inversion. Shared so the report body, the cycles DOT, and
+/// the stdout summary all classify cycles identically.
+pub const TANGLE: usize = 12;
+
+/// How many members of a large tangle to print before eliding the rest.
+const TANGLE_SAMPLE: usize = 12;
+
 #[derive(Serialize)]
 pub struct CycleReport {
     pub locks: Vec<String>,
@@ -93,8 +102,10 @@ pub fn build_json(an: &Analysis, g: &LockGraph) -> JsonReport {
         }
     }
     // smallest cycles first: a 2–3 lock inversion is the actionable finding; the
-    // large strongly-connected tangles go last.
-    cycles.sort_by_key(|c| c.locks.len());
+    // large strongly-connected tangles go last. Break ties on the (already sorted)
+    // lock list so equal-size cycles have a stable, reproducible order.
+    cycles.sort_by(|a, b| a.locks.len().cmp(&b.locks.len()).then_with(|| a.locks.cmp(&b.locks)));
+    suppressed.sort_by(|a, b| a.locks.cmp(&b.locks));
 
     JsonReport {
         node_count: g.nodes.len(),
@@ -122,10 +133,6 @@ pub fn text(rep: &JsonReport) -> String {
     if rep.cycles.is_empty() {
         let _ = writeln!(s, "No lock-order deadlock cycles found.");
     }
-    // SCCs above this size are reported as a "lock tangle" summary rather than a
-    // full per-edge dump — they reflect a globally interconnected lock hierarchy,
-    // not a single actionable inversion.
-    const TANGLE: usize = 12;
     let small: Vec<&CycleReport> = rep.cycles.iter().filter(|c| c.locks.len() <= TANGLE).collect();
     let large: Vec<&CycleReport> = rep.cycles.iter().filter(|c| c.locks.len() > TANGLE).collect();
 
@@ -150,10 +157,10 @@ pub fn text(rep: &JsonReport) -> String {
             c.locks.len()
         );
         let _ = writeln!(s, "   a globally interconnected lock hierarchy; sample members:");
-        for l in c.locks.iter().take(12) {
+        for l in c.locks.iter().take(TANGLE_SAMPLE) {
             let _ = writeln!(s, "     {l}");
         }
-        let _ = writeln!(s, "     … and {} more", c.locks.len().saturating_sub(12));
+        let _ = writeln!(s, "     … and {} more", c.locks.len().saturating_sub(TANGLE_SAMPLE));
         let _ = writeln!(s);
     }
     if !rep.suppressed.is_empty() {
@@ -170,7 +177,6 @@ pub fn text(rep: &JsonReport) -> String {
 /// Graphviz layout on them is pathologically slow and the picture is unreadable
 /// anyway. This is the part worth viewing.
 pub fn dot_cycles(g: &LockGraph) -> String {
-    const TANGLE: usize = 12;
     let mut in_cycle: HashSet<usize> = HashSet::new();
     for comp in g.deadlock_sccs() {
         if comp.len() <= TANGLE && g.common_guard(&comp).is_empty() {
@@ -178,7 +184,9 @@ pub fn dot_cycles(g: &LockGraph) -> String {
         }
     }
     let mut s = String::from("digraph cycles {\n  rankdir=LR; node [shape=box,fontsize=9,style=filled,fillcolor=\"#ffe0e0\"];\n");
-    for &i in &in_cycle {
+    let mut cycle_nodes: Vec<usize> = in_cycle.iter().copied().collect();
+    cycle_nodes.sort();
+    for &i in &cycle_nodes {
         let _ = writeln!(s, "  \"{}\";", g.nodes[i].name());
     }
     for (a, b, ev) in g.sorted_evidence() {
@@ -198,7 +206,9 @@ pub fn dot(g: &LockGraph) -> String {
         }
     }
     let mut s = String::from("digraph locks {\n  rankdir=LR; node [shape=box,fontsize=9];\n");
-    for &i in &in_cycle {
+    let mut cycle_nodes: Vec<usize> = in_cycle.iter().copied().collect();
+    cycle_nodes.sort();
+    for &i in &cycle_nodes {
         let _ = writeln!(
             s,
             "  \"{}\" [color=red,style=filled,fillcolor=\"#ffe0e0\"];",

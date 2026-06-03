@@ -41,7 +41,7 @@ fn is_lock_type(class: &str) -> bool {
         c,
         "Lock" | "ReentrantLock" | "ReentrantReadWriteLock"
             | "ReadLock" | "WriteLock"
-    ) || class.contains("locks.")
+    ) || class.contains("locks.") // any other type under java.util.concurrent.locks
 }
 
 /// User adjustments to the async-dispatch list, loaded from `--async-dispatch FILE`.
