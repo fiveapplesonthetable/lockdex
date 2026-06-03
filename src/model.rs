@@ -50,8 +50,14 @@ pub enum Op {
     /// any `invoke-*`
     Invoke(Invoke),
     /// `return-object src` (carries the returned register for value summaries);
-    /// non-object / void returns carry `None`.
+    /// non-object / void returns carry `None`. A path terminator.
     Return(Option<Reg>),
+    /// `goto` — unconditional jump to a code offset.
+    Goto(u32),
+    /// `if-*` — conditional branch to a code offset (plus the implicit fall-through).
+    Branch(u32),
+    /// `throw` — a path terminator (the handler is a separate block).
+    Throw,
     /// defines `dst` with an opaque value (clears any lock tracked there).
     Def(Reg),
     Other,

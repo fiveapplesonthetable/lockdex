@@ -326,11 +326,22 @@ fn parse_insn(body: &str) -> Op {
         }
         "return-object" => Op::Return(reg(rest)),
         "return-void" | "return" | "return-wide" => Op::Return(None),
+        "throw" => Op::Throw,
+        _ if mnem.starts_with("goto") => branch_target(rest).map(Op::Goto).unwrap_or(Op::Other),
+        _ if mnem.starts_with("if-") => branch_target(rest).map(Op::Branch).unwrap_or(Op::Other),
         _ if mnem.starts_with("invoke") => parse_invoke(mnem, rest),
         // Unmodeled opcode: in practice it never defines a lock-typed register, so
         // treating it as opaque is safe (the dst-clearing forms are handled above).
         _ => Op::Other,
     }
+}
+
+/// The branch target of a `goto`/`if-*` operand — the last hex token before the
+/// disassembler comment (`v0, 0014 // +0009` -> `0x0014`, an absolute code offset).
+fn branch_target(s: &str) -> Option<u32> {
+    let operands = s.split("//").next().unwrap_or(s);
+    let tok = operands.split(|c: char| c == ',' || c.is_whitespace()).rfind(|t| !t.is_empty())?;
+    u32::from_str_radix(tok, 16).ok()
 }
 
 fn parse_invoke(mnem: &str, rest: &str) -> Op {
