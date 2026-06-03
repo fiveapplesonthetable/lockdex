@@ -99,6 +99,10 @@ struct Summary {
     value_summary: Option<Lock>,
     /// allocation sites created here: site -> type.
     allocs: Vec<(String, String)>,
+    /// `field = new T(...)`: a freshly allocated object stored into a field
+    /// (`field key`, type). A type allocated once and stored once is a singleton,
+    /// whose `this`-monitor is the same lock as `owner.field`.
+    alloc_stores: Vec<(String, String)>,
     /// `new T(...)` followed by `<init>`: (site, ctor_key, arg values).
     alloc_inits: Vec<(String, String, Vec<Option<Lock>>)>,
     /// if this method is a `<init>`, captured fields: field -> formal it stores.
@@ -249,6 +253,33 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
                             && v.name() != key
                     });
                     note(key, v, &mut seen);
+                }
+            }
+        }
+        // (c) singleton self-monitor: a class allocated exactly once and stored in a
+        // single field is `owner.field` from outside and `this` from inside. Unify
+        // them so a field guarded by `synchronized(this)` and by
+        // `synchronized(owner.field)` is recognised as one lock. Restricted to
+        // classes that actually synchronize on `this` — otherwise a plain
+        // `new Object()` lock would be misread as its (meaningless) type identity.
+        let self_sync: HashSet<&str> = by_key
+            .values()
+            .filter(|s| s.acquires.iter().any(|l| matches!(l.root, Root::This)))
+            .map(|s| s.class.as_str())
+            .collect();
+        let mut stored_in: HashMap<&str, HashSet<&str>> = HashMap::new();
+        for s in by_key.values() {
+            for (field, ty) in &s.alloc_stores {
+                stored_in.entry(ty.as_str()).or_default().insert(field.as_str());
+            }
+        }
+        // A self-synchronizing class held in exactly one field across the component
+        // is that field's singleton — its `this`-monitor and `owner.field` are one.
+        for (ty, fields) in &stored_in {
+            if self_sync.contains(ty) && fields.len() == 1 {
+                let field = (*fields.iter().next().expect("len == 1")).to_string();
+                if !seen.contains_key(&field) {
+                    note(field, Some(Lock::new(Root::Recv((*ty).to_string()))), &mut seen);
                 }
             }
         }

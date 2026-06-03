@@ -80,6 +80,13 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                     }
                 }
                 let _ = base;
+                // `field = new T(...)`: remember the store so a singleton's monitor
+                // can be unified with `owner.field` later.
+                if let Some(Root::Alloc(site)) = regs.get(src).map(|l| l.root.clone()) {
+                    if let Some(ty) = alloc_ty.get(&site) {
+                        s.alloc_stores.push((format!("{class}.{field}"), ty.clone()));
+                    }
+                }
                 record_field(&mut s, m, class, field, true, &held, line_at(insn.offset));
             }
             Op::ConstClass { dst, class } => {
