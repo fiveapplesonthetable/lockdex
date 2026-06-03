@@ -26,7 +26,7 @@
 //! `final` / `volatile` fields and constructor writes are excluded (write-once,
 //! lock-free, or pre-publication — none are races).
 
-use super::{canonicalize, ground, is_local_lock, strip_outer_this, Summary};
+use super::{canonicalize, ground, is_local_lock, strip_outer_this, FieldAccess, Summary};
 use crate::model::Lock;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -185,15 +185,25 @@ pub(super) fn compute(
         g
     };
 
-    // Pass 1: tally, per field, how often each lock guards its writes and reads.
-    let mut stats: HashMap<&str, Stat> = HashMap::new();
+    // Group accesses by the field *instance*: a stable named base (`Foo.mInstaller`)
+    // qualifies the key, so one guarded instance of a shared data class is analyzed
+    // apart from the anonymous instances of the same `Class.field` used elsewhere.
+    let gkey = |fa: &FieldAccess| -> String {
+        match &fa.inst {
+            Some(o) => format!("{o}.{}", fa.field.rsplit('.').next().unwrap_or(&fa.field)),
+            None => fa.field.clone(),
+        }
+    };
+
+    // Pass 1: tally, per field instance, how often each lock guards its writes/reads.
+    let mut stats: HashMap<String, Stat> = HashMap::new();
     for (k, s) in by_key {
         for fa in &s.field_access {
             if excluded_fields.contains(&fa.field) {
                 continue;
             }
             let guards = effective(&fa.held, &s.class, k);
-            let st = stats.entry(fa.field.as_str()).or_default();
+            let st = stats.entry(gkey(fa)).or_default();
             let (total, by_lock) = if fa.write {
                 (&mut st.writes, &mut st.write_guard)
             } else {
@@ -213,7 +223,7 @@ pub(super) fn compute(
     // guard) is a presentation choice applied by the reporter, so the user can tune
     // it. Sorted tie-breaks keep the chosen guard deterministic.
     let mut guard_of: HashMap<String, String> = HashMap::new();
-    for (&field, st) in &stats {
+    for (field, st) in &stats {
         if st.writes == 0 {
             continue;
         }
@@ -229,14 +239,15 @@ pub(super) fn compute(
         }
     }
 
-    // Pass 2: collect the violating sites for the racy fields.
-    let mut violations: HashMap<&str, Vec<Violation>> = HashMap::new();
+    // Pass 2: collect the violating sites for the racy field instances.
+    let mut violations: HashMap<String, Vec<Violation>> = HashMap::new();
     for (k, s) in by_key {
         for fa in &s.field_access {
-            let Some(guard) = guard_of.get(&fa.field) else { continue };
+            let key = gkey(fa);
+            let Some(guard) = guard_of.get(&key) else { continue };
             if !effective(&fa.held, &s.class, k).contains(guard) {
                 violations
-                    .entry(fa.field.as_str())
+                    .entry(key)
                     .or_default()
                     .push(Violation { method: k.clone(), line: fa.line, write: fa.write });
             }

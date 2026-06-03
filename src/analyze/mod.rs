@@ -81,10 +81,16 @@ impl RawCall {
 /// (relative to the enclosing method). Feeds the field-race analysis.
 #[derive(Debug, Clone)]
 struct FieldAccess {
+    /// `DeclaringClass.field` — used for the `final`/`volatile` exclusion.
     field: String,
     write: bool,
     line: Option<u32>,
     held: Vec<Lock>,
+    /// the access path of the base object when it is a stable named field
+    /// (`Foo.mInstaller`), else `None`. Distinguishes one guarded instance of a shared
+    /// data class from the many other instances accessed lock-free elsewhere, so a
+    /// single guarded write doesn't project its guard onto every `ResolveInfo.field`.
+    inst: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]

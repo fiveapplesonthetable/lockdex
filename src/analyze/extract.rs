@@ -38,7 +38,7 @@ enum Event {
     /// a call whose held-set must be recorded for the global phase.
     Call(RawCall),
     /// a field read/write whose held-set feeds the race analysis.
-    Field { key: String, write: bool, line: Option<u32> },
+    Field { key: String, write: bool, line: Option<u32>, inst: Option<String> },
 }
 
 pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: &juc::AsyncConfig) -> Summary {
@@ -81,10 +81,11 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
             }
             Op::Iget { dst, base, class, field } => {
                 let fresh = regs.get(base).is_some_and(|l| matches!(l.root, Root::Alloc(_)));
+                let inst = base_inst(&regs, *base);
                 regs.insert(*dst, Lock::field(Root::Recv(class.clone()), field.clone()));
                 if !fresh {
                     if let Some(key) = record_field(class, field) {
-                        events.push((i, Event::Field { key, write: false, line }));
+                        events.push((i, Event::Field { key, write: false, line, inst }));
                     }
                 }
             }
@@ -113,9 +114,10 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                     }
                 }
                 let fresh = regs.get(base).is_some_and(|l| matches!(l.root, Root::Alloc(_)));
+                let inst = base_inst(&regs, *base);
                 if !fresh {
                     if let Some(key) = record_field(class, field) {
-                        events.push((i, Event::Field { key, write: true, line }));
+                        events.push((i, Event::Field { key, write: true, line, inst }));
                     }
                 }
             }
@@ -225,8 +227,8 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                 rc.held = held.clone();
                 s.calls.push(rc);
             }
-            Event::Field { key, write, line } => {
-                s.field_access.push(FieldAccess { field: key, write, line, held: held.clone() });
+            Event::Field { key, write, line, inst } => {
+                s.field_access.push(FieldAccess { field: key, write, line, held: held.clone(), inst });
             }
         }
     }
@@ -355,6 +357,20 @@ fn field_recorder(m: &Method) -> impl Fn(&str, &str) -> Option<String> + '_ {
         || m.name.starts_with("-$$")
         || m.name.contains("$$Nest");
     move |class: &str, field: &str| (!skip).then(|| format!("{class}.{field}"))
+}
+
+/// The access path of a base register when it is a stable named object (a field or
+/// static, e.g. `Foo.mInstaller`), used to tell one specific instance of a shared
+/// data class apart from the anonymous instances accessed elsewhere. `None` for `this`
+/// (the receiver's own field — the common case), a parameter, an allocation, or an
+/// opaque value.
+fn base_inst(regs: &HashMap<Reg, Lock>, r: Reg) -> Option<String> {
+    match regs.get(&r) {
+        Some(l) if matches!(l.root, Root::Recv(_) | Root::Static(_)) && !l.fields.is_empty() => {
+            Some(l.name())
+        }
+        _ => None,
+    }
 }
 
 fn simple_value(l: &Lock) -> bool {
