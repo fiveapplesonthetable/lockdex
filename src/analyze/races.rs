@@ -26,7 +26,7 @@
 //! `final` / `volatile` fields and constructor writes are excluded (write-once,
 //! lock-free, or pre-publication — none are races).
 
-use super::{canonicalize, ground, is_local_lock, Summary};
+use super::{canonicalize, ground, is_local_lock, strip_outer_this, Summary};
 use crate::model::Lock;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -69,6 +69,17 @@ fn guard_names(held: &[Lock], class: &str, key: &str, alias: &HashMap<String, Lo
     held.iter()
         .filter(|l| !is_local_lock(l))
         .map(|l| canonicalize(&ground(l, class, key), alias).name())
+        .collect()
+}
+
+/// Grounded shared-lock names held at an access, for the race analysis only — same as
+/// [`guard_names`] but `this$0`-folded (an inner class's `synchronized(Outer.this)`
+/// names the same monitor as the outer class's `synchronized(this)`). Kept out of the
+/// deadlock path, which must keep distinct enclosing instances separable.
+fn race_held_names(held: &[Lock], class: &str, key: &str, alias: &HashMap<String, Lock>) -> HashSet<String> {
+    held.iter()
+        .filter(|l| !is_local_lock(l))
+        .map(|l| strip_outer_this(&canonicalize(&ground(l, class, key), alias)).name())
         .collect()
 }
 
@@ -167,7 +178,7 @@ pub(super) fn compute(
 
     // The effective guard set at an access: locks held locally ∪ guaranteed-on-entry.
     let effective = |fa_held: &[Lock], class: &str, key: &str| -> HashSet<String> {
-        let mut g = guard_names(fa_held, class, key, alias);
+        let mut g = race_held_names(fa_held, class, key, alias);
         if let Some(e) = entry.get(key) {
             g.extend(e.iter().cloned());
         }

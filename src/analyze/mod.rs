@@ -517,6 +517,25 @@ fn resolve_lock(
     canonicalize(&ground(&cur, &s.class, &s.key), canon)
 }
 
+/// The compiler-synthesized field that holds an inner class's enclosing instance.
+const OUTER_THIS: &str = "this$0";
+
+/// Rewrite a lock rooted at an inner class's outer-instance field (`Inner.this$0`,
+/// i.e. `Outer.this`) to the outer instance itself, so `synchronized(Outer.this)` in
+/// an inner class names the same monitor as `synchronized(this)` in the outer class.
+/// Sound: `this$0` *is* the enclosing instance, and the outer type is the inner type
+/// minus its trailing `$Inner` segment. Used by the race analysis only — it does not
+/// rewrite the deadlock edge graph, where two distinct enclosing instances of the
+/// same outer type must stay separable.
+pub(super) fn strip_outer_this(lock: &Lock) -> Lock {
+    let Root::Recv(inner) = &lock.root else { return lock.clone() };
+    let Some(rest) = lock.fields.split_first().filter(|(f, _)| *f == OUTER_THIS) else {
+        return lock.clone();
+    };
+    let Some((outer, _)) = inner.rsplit_once('$') else { return lock.clone() };
+    Lock { root: Root::Recv(outer.to_string()), fields: rest.1.to_vec(), mode: lock.mode }
+}
+
 /// Follow lock-field aliases: a field assigned a shared lock is canonicalized to
 /// that lock's identity, so a singleton lock split across fields collapses to one.
 fn canonicalize(lock: &Lock, canon: &HashMap<String, Lock>) -> Lock {
