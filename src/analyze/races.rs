@@ -227,9 +227,15 @@ pub(super) fn compute(
         if st.writes == 0 {
             continue;
         }
-        let Some((guard, &gcount)) =
-            st.write_guard.iter().max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
-        else {
+        // Dominant write-guard, tie-broken toward the lock the *reads* also hold —
+        // for a field under nested locks (`synchronized(a){ synchronized(b){…} }`) or
+        // an inner lock reached under an outer one, the lock held on *every* access is
+        // the real guard, not whichever shares the most writes by chance.
+        let Some((guard, &gcount)) = st.write_guard.iter().max_by(|a, b| {
+            a.1.cmp(b.1)
+                .then_with(|| st.read_guard.get(a.0).unwrap_or(&0).cmp(st.read_guard.get(b.0).unwrap_or(&0)))
+                .then_with(|| b.0.cmp(a.0))
+        }) else {
             continue;
         };
         let read_guarded = st.read_guard.get(guard).copied().unwrap_or(0);
