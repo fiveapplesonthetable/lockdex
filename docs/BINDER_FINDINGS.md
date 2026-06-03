@@ -1,815 +1,1060 @@
-# Findings — locks held across Binder IPC in `system_server`
+# Findings — the ActivityManager lock held across Binder IPC
 
-`lockdex binder` reports the cross-process hazard that the deadlock cycles miss: a lock held *across* a Binder transaction. This is sound — every finding is a real path on which a `system_server` lock is held while an `IBinder.transact` to another process executes, or a binder entry point that acquires locks a remote caller can block on. A lock pinned across an IPC stalls everything that needs it whenever the remote side is slow, dead, or re-enters `system_server` — a latency cliff and a cross-process AB-BA risk.
+`lockdex binder --lock ActivityManagerService`. The AMS lock is `system_server`'s busiest monitor — it serializes process lifecycle, service binding, broadcast dispatch, and OOM adjustment. **Holding it across an outgoing Binder transaction is the classic stall pattern:** while the call to another process is in flight, no other thread can take the AMS lock, so if that process is slow, janky, or dead, the entire activity-manager subsystem blocks behind it — ANRs, Watchdog kills, system-wide jank. It's also a cross-process AB-BA risk if the callee re-enters `system_server`.
 
-On a build's `services.jar`: **1205** outgoing hold-sites and **161** incoming binder entries (6 high-risk). The 50 clearest of each are below with diagrams.
+Sound analysis: every site below is a real path on which an AMS lock (`ActivityManagerService` monitor, `mProcLock`, or an inner-class callback holding it via `this$0`) is held while the path reaches an `IBinder.transact` to another process. **130** distinct (holder, IPC-target) hazards, each with its diagram.
 
 
-## Outgoing — a lock held across a transaction to another process
+---
 
-Each holds the named lock while the call path reaches an outgoing Binder transaction. If the remote process blocks (or calls back into `system_server` and needs a lock), the held lock is pinned for the duration of the round-trip.
 
+### 1. `ActivityManagerService$2.onActivityLaunched` holds the AMS monitor across an IPC at `ActivityManagerService$2.onActivityLaunched`
 
-### O1. `BatteryService$2.onChange` holds `BatteryService.mLock` across an IPC
+`ActivityManagerService$2.onActivityLaunched` (line 1095) holds the AMS monitor while the call path `AppStartInfoTracker.onActivityLaunched` → … → `ActivityManagerService$2.onActivityLaunched` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 508) the lock(s) `BatteryService.mLock` are held; the path reaches an outgoing Binder transaction via `BatteryService.-$$Nest$mupdateBatteryWarningLevelLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams001.svg)
 
-![](findings/binder/out01.svg)
 
+### 2. `ActivityManagerService$5.onRemoveCompleted` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O2. `BatteryService.onBootPhase` holds `BatteryService.mLock` across an IPC
+`ActivityManagerService$5.onRemoveCompleted` (line 3640) holds the AMS monitor while the call path `ActivityManagerService.-$$Nest$mfinishForceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onBootPhase` (line 516) the lock(s) `BatteryService.mLock` are held; the path reaches an outgoing Binder transaction via `BatteryService.updateBatteryWarningLevelLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams002.svg)
 
-![](findings/binder/out02.svg)
 
+### 3. `ActivityManagerService$6.onReceive` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O3. `BatteryService.update` holds `BatteryService.mLock` across an IPC
+`ActivityManagerService$6.onReceive` (line 5292) holds the AMS monitor while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `update` (line 716) the lock(s) `BatteryService.mLock` are held; the path reaches an outgoing Binder transaction via `BatteryService.processValuesLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams003.svg)
 
-![](findings/binder/out03.svg)
 
+### 4. `ActivityManagerService$AppDeathRecipient.binderDied` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O4. `ConsumerIrService.getCarrierFrequencies` holds `ConsumerIrService.mHalLock` across an IPC
+`ActivityManagerService$AppDeathRecipient.binderDied` (line 1532) holds the AMS monitor while the call path `ActivityManagerService.appDiedLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `getCarrierFrequencies` (line 146) the lock(s) `ConsumerIrService.mHalLock` are held; the path reaches an outgoing Binder transaction via `IConsumerIr$Stub$Proxy.getCarrierFreqs`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams004.svg)
 
-![](findings/binder/out04.svg)
 
+### 5. `ActivityManagerService$LocalService.broadcastCloseSystemDialogs` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O5. `ConsumerIrService.transmit` holds `ConsumerIrService.mHalLock` across an IPC
+`ActivityManagerService$LocalService.broadcastCloseSystemDialogs` (line 17687) holds the AMS monitor while the call path `ActivityManagerService.broadcastIntentLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `transmit` (line 122) the lock(s) `ConsumerIrService.mHalLock` are held; the path reaches an outgoing Binder transaction via `IConsumerIr$Stub$Proxy.transmit`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams005.svg)
 
-![](findings/binder/out05.svg)
 
+### 6. `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O6. `DeviceIdleController.addPowerSaveTempWhitelistAppDirectInternal` holds `server.DeviceIdleController` across an IPC
+`ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged` (line 17621) holds the AMS monitor while the call path `ActivityManagerService.broadcastIntentLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `addPowerSaveTempWhitelistAppDirectInternal` (line 3308) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `DeviceIdleController.updateTempWhitelistAppIdsLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams006.svg)
 
-![](findings/binder/out06.svg)
 
+### 7. `ActivityManagerService$LocalService.broadcastIntent` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O7. `DeviceIdleController.addPowerSaveTempWhitelistAppDirectInternal` holds `server.DeviceIdleController` across an IPC
+`ActivityManagerService$LocalService.broadcastIntent` (line 17425) holds the AMS monitor while the call path `BroadcastController.broadcastIntentLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `addPowerSaveTempWhitelistAppDirectInternal` (line 3324) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams007.svg)
 
-![](findings/binder/out07.svg)
 
+### 8. `ActivityManagerService$LocalService.broadcastIntentInPackage` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O8. `DeviceIdleController.checkTempAppWhitelistTimeout` holds `server.DeviceIdleController` across an IPC
+`ActivityManagerService$LocalService.broadcastIntentInPackage` (line 17402) holds the AMS monitor while the call path `BroadcastController.broadcastIntentInPackage` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `checkTempAppWhitelistTimeout` (line 3385) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `DeviceIdleController.onAppRemovedFromTempWhitelistLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams008.svg)
 
-![](findings/binder/out08.svg)
 
+### 9. `ActivityManagerService$LocalService.cleanUpServices` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.cleanUpServices`
 
-### O9. `DeviceIdleController.removePowerSaveTempWhitelistAppDirectInternal` holds `server.DeviceIdleController` across an IPC
+`ActivityManagerService$LocalService.cleanUpServices` (line 17506) holds the AMS monitor while the call path `ActiveServices.cleanUpServices` → … → `ActivityManagerService$LocalService.cleanUpServices` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `removePowerSaveTempWhitelistAppDirectInternal` (line 3357) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `DeviceIdleController.onAppRemovedFromTempWhitelistLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams009.svg)
 
-![](findings/binder/out09.svg)
 
+### 10. `ActivityManagerService$LocalService.killAllBackgroundProcessesExcept` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O10. `StorageManagerService.mountProxyFileDescriptorBridge` holds `StorageManagerService.mAppFuseLock` across an IPC
+`ActivityManagerService$LocalService.killAllBackgroundProcessesExcept` (line 17702) holds the AMS monitor while the call path `ActivityManagerService.killAllBackgroundProcessesExcept` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `mountProxyFileDescriptorBridge` (line 3717) the lock(s) `StorageManagerService.mAppFuseLock` are held; the path reaches an outgoing Binder transaction via `AppFuseBridge.addBridge`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams010.svg)
 
-![](findings/binder/out10.svg)
 
+### 11. `ActivityManagerService$LocalService.killApplicationSync` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O11. `StorageManagerService.openProxyFileDescriptor` holds `StorageManagerService.mAppFuseLock` across an IPC
+`ActivityManagerService$LocalService.killApplicationSync` (line 18313) holds the AMS monitor while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `openProxyFileDescriptor` (line 3748) the lock(s) `StorageManagerService.mAppFuseLock` are held; the path reaches an outgoing Binder transaction via `AppFuseBridge.openFile`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams011.svg)
 
-![](findings/binder/out11.svg)
 
+### 12. `ActivityManagerService$LocalService.killForegroundAppsForUser` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O12. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+`ActivityManagerService$LocalService.killForegroundAppsForUser` (line 16895) holds the AMS monitor while the call path `ProcessList.removeProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `runSmartIdleMaint` (line 2938) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `IVold$Stub$Proxy.getWriteAmount`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams012.svg)
 
-![](findings/binder/out12.svg)
 
+### 13. `ActivityManagerService$LocalService.killProcess` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O13. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+`ActivityManagerService$LocalService.killProcess` (line 17220) holds the AMS monitor while the call path `ProcessList.removeProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `runSmartIdleMaint` (line 2948) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `StorageManagerService.needsCheckpoint`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams013.svg)
 
-![](findings/binder/out13.svg)
 
+### 14. `ActivityManagerService$LocalService.killProcessesForRemovedTask` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.killProcessesForRemovedTask`
 
-### O14. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+`ActivityManagerService$LocalService.killProcessesForRemovedTask` (line 17191) holds the AMS monitor while the call path `ProcessRecordInternal.killLocked` → … → `ActivityManagerService$LocalService.killProcessesForRemovedTask` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `runSmartIdleMaint` (line 2949) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `StorageManagerService.refreshLifetimeConstraint`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams014.svg)
 
-![](findings/binder/out14.svg)
 
+### 15. `ActivityManagerService$LocalService.killSdkSandboxClientAppProcess` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.killSdkSandboxClientAppProcess`
 
-### O15. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+`ActivityManagerService$LocalService.killSdkSandboxClientAppProcess` (line 16834) holds the AMS monitor while the call path `ProcessRecordInternal.killLocked` → … → `ActivityManagerService$LocalService.killSdkSandboxClientAppProcess` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `runSmartIdleMaint` (line 2964) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `IVold$Stub$Proxy.setGCUrgentPace`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams015.svg)
 
-![](findings/binder/out15.svg)
 
+### 16. `ActivityManagerService$LocalService.notifyActiveMediaForegroundService` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.notifyActiveMediaForegroundService`
 
-### O16. `VpnManagerService.deleteVpnProfile` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.notifyActiveMediaForegroundService` (line 18202) holds the AMS monitor while the call path `ActiveServices.notifyActiveMediaForegroundServiceLocked` → … → `ActivityManagerService$LocalService.notifyActiveMediaForegroundService` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `deleteVpnProfile` (line 340) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.deleteVpnProfile`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams016.svg)
 
-![](findings/binder/out16.svg)
 
+### 17. `ActivityManagerService$LocalService.notifyInactiveMediaForegroundService` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.notifyInactiveMediaForegroundService`
 
-### O17. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.notifyInactiveMediaForegroundService` (line 18211) holds the AMS monitor while the call path `ActiveServices.notifyInactiveMediaForegroundServiceLocked` → … → `ActivityManagerService$LocalService.notifyInactiveMediaForegroundService` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `factoryReset` (line 984) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setAlwaysOnVpnPackage`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams017.svg)
 
-![](findings/binder/out17.svg)
 
+### 18. `ActivityManagerService$LocalService.setDebugFlagsForStartingActivity` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O18. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.setDebugFlagsForStartingActivity` (line 17745) holds the AMS monitor while the call path `ActivityManagerService.-$$Nest$msetDebugApp` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `factoryReset` (line 994) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams018.svg)
 
-![](findings/binder/out18.svg)
 
+### 19. `ActivityManagerService$LocalService.setHasOverlayUi` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.setHasOverlayUi`
 
-### O19. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.setHasOverlayUi` (line 17040) holds the AMS monitor while the call path `ProcessStateController.runUpdate` → … → `ActivityManagerService$LocalService.setHasOverlayUi` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `factoryReset` (line 1004) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.prepareVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams019.svg)
 
-![](findings/binder/out19.svg)
 
+### 20. `ActivityManagerService$LocalService.startForegroundServiceDelegate` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.startForegroundServiceDelegate`
 
-### O20. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.startForegroundServiceDelegate` (line 18179) holds the AMS monitor while the call path `ActiveServices.startForegroundServiceDelegateLocked` → … → `ActivityManagerService$LocalService.startForegroundServiceDelegate` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `factoryReset` (line 1011) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.prepareVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams020.svg)
 
-![](findings/binder/out20.svg)
 
+### 21. `ActivityManagerService$LocalService.startProcess` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O21. `VpnManagerService.onPackageRemoved` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.startProcess` (line 17722) holds the AMS monitor while the call path `ActivityManagerService.startProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onPackageRemoved` (line 892) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.setAlwaysOnPackage`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams021.svg)
 
-![](findings/binder/out21.svg)
 
+### 22. `ActivityManagerService$LocalService.startServiceInPackage` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O22. `VpnManagerService.onPackageRemoved` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.startServiceInPackage` (line 17471) holds the AMS monitor while the call path `ActiveServices.startServiceLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onPackageRemoved` (line 897) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.deleteVpnProfileDueToAppRemoval`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams022.svg)
 
-![](findings/binder/out22.svg)
 
+### 23. `ActivityManagerService$LocalService.stopForegroundServiceDelegate` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.stopForegroundServiceDelegate`
 
-### O23. `VpnManagerService.onPackageReplaced` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.stopForegroundServiceDelegate` (line 18187) holds the AMS monitor while the call path `ActiveServices.stopForegroundServiceDelegateLocked` → … → `ActivityManagerService$LocalService.stopForegroundServiceDelegate` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onPackageReplaced` (line 871) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams023.svg)
 
-![](findings/binder/out23.svg)
 
+### 24. `ActivityManagerService$LocalService.tempAllowlistForPendingIntent` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.tempAllowlistForPendingIntent`
 
-### O24. `VpnManagerService.onUserStarted` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.tempAllowlistForPendingIntent` (line 17387) holds the AMS monitor while the call path `ActivityManagerService.tempAllowlistForPendingIntentLocked` → … → `ActivityManagerService$LocalService.tempAllowlistForPendingIntent` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onUserStarted` (line 798) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService$Dependencies.createVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams024.svg)
 
-![](findings/binder/out24.svg)
 
+### 25. `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist` holds the AMS monitor + `mProcLock` across an IPC at `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist`
 
-### O25. `VpnManagerService.onUserStarted` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist` (line 16978) holds the AMS monitor + `mProcLock` while the call path `ActivityManagerService.setUidTempAllowlistStateLSP` → … → `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onUserStarted` (line 802) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.updateLockdownVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams025.svg)
 
-![](findings/binder/out25.svg)
 
+### 26. `ActivityManagerService$LocalService.updateOomAdj` holds the AMS monitor across an IPC at `ActivityManagerService$LocalService.updateOomAdj`
 
-### O26. `VpnManagerService.onUserUnlocked` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$LocalService.updateOomAdj` (line 17244) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `ActivityManagerService$LocalService.updateOomAdj` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onUserUnlocked` (line 924) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.updateLockdownVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams026.svg)
 
-![](findings/binder/out26.svg)
 
+### 27. `ActivityManagerService$MainHandler.handleMessage` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O27. `VpnManagerService.onUserUnlocked` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$MainHandler.handleMessage` (line 1823) holds the AMS monitor while the call path `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onUserUnlocked` (line 926) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams027.svg)
 
-![](findings/binder/out27.svg)
 
+### 28. `ActivityManagerService$MainHandler.handleMessage` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O28. `VpnManagerService.onVpnLockdownReset` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService$MainHandler.handleMessage` (line 1841) holds the AMS monitor while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onVpnLockdownReset` (line 933) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `LockdownVpnTracker.reset`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams028.svg)
 
-![](findings/binder/out28.svg)
 
+### 29. `ActivityManagerService.attachApplication` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O29. `VpnManagerService.prepareVpn` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.attachApplication` (line 4926) holds the AMS monitor while the call path `ActivityManagerService.attachApplicationLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `prepareVpn` (line 229) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.prepare`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams029.svg)
 
-![](findings/binder/out29.svg)
 
+### 30. `ActivityManagerService.attachApplicationLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O30. `VpnManagerService.setAlwaysOnVpnPackage` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.attachApplicationLocked` (line 4680) holds `mProcLock` while the call path `ActivityManagerService.clearProcessForegroundLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `setAlwaysOnVpnPackage` (line 612) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.setAlwaysOnPackage`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams030.svg)
 
-![](findings/binder/out30.svg)
 
+### 31. `ActivityManagerService.batterySendBroadcast` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O31. `VpnManagerService.setAlwaysOnVpnPackage` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.batterySendBroadcast` (line 2815) holds the AMS monitor while the call path `ActivityManagerService.broadcastIntentLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `setAlwaysOnVpnPackage` (line 615) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams031.svg)
 
-![](findings/binder/out31.svg)
 
+### 32. `ActivityManagerService.bindBackupAgent` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O32. `VpnManagerService.setAlwaysOnVpnPackage` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.bindBackupAgent` (line 14240) holds the AMS monitor while the call path `ActivityManagerService.startProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `setAlwaysOnVpnPackage` (line 616) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.setAlwaysOnPackage`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams032.svg)
 
-![](findings/binder/out32.svg)
 
+### 33. `ActivityManagerService.bindBackupAgent` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O33. `VpnManagerService.startAlwaysOnVpn` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.bindBackupAgent` (line 14249) holds the AMS monitor while the call path `AppStartInfoTracker.handleProcessBackupStart` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `startAlwaysOnVpn` (line 576) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams033.svg)
 
-![](findings/binder/out33.svg)
 
+### 34. `ActivityManagerService.bindBackupAgent` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O34. `VpnManagerService.startLegacyVpn` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.bindBackupAgent` (line 14269) holds the AMS monitor while the call path `ProcessStateController.setBackupTarget` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `startLegacyVpn` (line 439) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startLegacyVpn`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams034.svg)
 
-![](findings/binder/out34.svg)
 
+### 35. `ActivityManagerService.bindBackupAgent` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O35. `VpnManagerService.startVpnProfile` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.bindBackupAgent` (line 14277) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `startVpnProfile` (line 381) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startVpnProfile`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams035.svg)
 
-![](findings/binder/out35.svg)
 
+### 36. `ActivityManagerService.bindServiceInstance` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O36. `VpnManagerService.stopVpnProfile` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.bindServiceInstance` (line 14045) holds the AMS monitor while the call path `ActiveServices.bindServiceLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `stopVpnProfile` (line 399) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.stopVpnProfile`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams036.svg)
 
-![](findings/binder/out36.svg)
 
+### 37. `ActivityManagerService.cleanUpApplicationRecordLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O37. `VpnManagerService.updateLockdownVpn` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.cleanUpApplicationRecordLocked` (line 13573) holds `mProcLock` while the call path `ActivityManagerService.removeLruProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `updateLockdownVpn` (line 495) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams037.svg)
 
-![](findings/binder/out37.svg)
 
+### 38. `ActivityManagerService.cleanUpApplicationRecordLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O38. `VpnManagerService.updateLockdownVpn` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.cleanUpApplicationRecordLocked` (line 13579) holds `mProcLock` while the call path `ProcessRecord.onCleanupApplicationRecordLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `updateLockdownVpn` (line 509) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams038.svg)
 
-![](findings/binder/out38.svg)
 
+### 39. `ActivityManagerService.clearApplicationUserData` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O39. `VpnManagerService.updateLockdownVpn` holds `VpnManagerService.mVpns` across an IPC
+`ActivityManagerService.clearApplicationUserData` (line 3629) holds the AMS monitor while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `updateLockdownVpn` (line 518) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams039.svg)
 
-![](findings/binder/out39.svg)
 
+### 40. `ActivityManagerService.clearApplicationUserData` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O40. `AbstractAccessibilityServiceConnection.getWindow` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+`ActivityManagerService.clearApplicationUserData` (line 3630) holds the AMS monitor while the call path `ActivityTaskManagerService$LocalService.removeRecentTasksByPackageName` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `getWindow` (line 645) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AbstractAccessibilityServiceConnection.ensureWindowsAvailableTimedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams040.svg)
 
-![](findings/binder/out40.svg)
 
+### 41. `ActivityManagerService.clearPendingBackup` holds the AMS monitor across an IPC at `ActivityManagerService.clearPendingBackup`
 
-### O41. `AbstractAccessibilityServiceConnection.getWindows` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+`ActivityManagerService.clearPendingBackup` (line 14327) holds the AMS monitor while the call path `ProcessStateController.stopBackupTarget` → … → `ActivityManagerService.clearPendingBackup` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `getWindows` (line 613) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AbstractAccessibilityServiceConnection.ensureWindowsAvailableTimedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams041.svg)
 
-![](findings/binder/out41.svg)
 
+### 42. `ActivityManagerService.crashApplicationWithTypeWithExtras` holds the AMS monitor across an IPC at `ActivityManagerService.crashApplicationWithTypeWithExtras`
 
-### O42. `AbstractAccessibilityServiceConnection.setCacheEnabled` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+`ActivityManagerService.crashApplicationWithTypeWithExtras` (line 3384) holds the AMS monitor while the call path `AppErrors.scheduleAppCrashLocked` → … → `ActivityManagerService.crashApplicationWithTypeWithExtras` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `setCacheEnabled` (line 2655) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.onClientChangeLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams042.svg)
 
-![](findings/binder/out42.svg)
 
+### 43. `ActivityManagerService.finishAttachApplicationInner` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O43. `AbstractAccessibilityServiceConnection.setServiceInfo` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+`ActivityManagerService.finishAttachApplicationInner` (line 4974) holds the AMS monitor while the call path `ProcessRecordInternal.killLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `setServiceInfo` (line 547) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.onClientChangeLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams043.svg)
 
-![](findings/binder/out43.svg)
 
+### 44. `ActivityManagerService.finishAttachApplicationInner` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O44. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishAttachApplicationInner` (line 4993) holds the AMS monitor while the call path `ActivityTaskManagerService$LocalService.attachApplication` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6129) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams044.svg)
 
-![](findings/binder/out44.svg)
 
+### 45. `ActivityManagerService.finishAttachApplicationInner` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O45. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishAttachApplicationInner` (line 5005) holds the AMS monitor while the call path `ActiveServices.attachApplicationLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6133) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams045.svg)
 
-![](findings/binder/out45.svg)
 
+### 46. `ActivityManagerService.finishAttachApplicationInner` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O46. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishAttachApplicationInner` (line 5017) holds the AMS monitor while the call path `BroadcastQueueImpl.onApplicationAttachedLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6138) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams046.svg)
 
-![](findings/binder/out46.svg)
 
+### 47. `ActivityManagerService.finishAttachApplicationInner` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O47. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishAttachApplicationInner` (line 5050) holds the AMS monitor while the call path `ActivityManagerService.handleAppDiedLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6142) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams047.svg)
 
-![](findings/binder/out47.svg)
 
+### 48. `ActivityManagerService.finishAttachApplicationInner` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O48. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishAttachApplicationInner` (line 5055) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6149) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams048.svg)
 
-![](findings/binder/out48.svg)
 
+### 49. `ActivityManagerService.finishBooting` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O49. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishBooting` (line 5329) holds the AMS monitor while the call path `ProcessList.startProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6153) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams049.svg)
 
-![](findings/binder/out49.svg)
 
+### 50. `ActivityManagerService.finishBooting` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-### O50. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+`ActivityManagerService.finishBooting` (line 5347) holds the AMS monitor while the call path `UserController.onBootComplete` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-At `onChange` (line 6157) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
 
+![](findings/binder/ams050.svg)
 
-![](findings/binder/out50.svg)
 
+### 51. `ActivityManagerService.forceStopPackage` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
-## Incoming — a binder entry that acquires locks a remote caller blocks on
+`ActivityManagerService.forceStopPackage` (line 3927) holds the AMS monitor while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-Each is a Binder entry point (a `Stub` method, a `binderDied`, a oneway callback) that takes the listed locks. A remote process blocks on those locks for the duration of the call. **HIGH** marks an entry that *also* holds one of them across its own outgoing transaction — so a remote caller can pin a `system_server` lock across a second IPC.
 
+![](findings/binder/ams051.svg)
 
-### I1. `BugreportManagerServiceImpl$DumpstateListener.binderDied` — **HIGH** (also held across its own outgoing transaction)
 
-This binder entry acquires `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+### 52. `ActivityManagerService.forceStopPackage` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.forceStopPackage` (line 3932) holds the AMS monitor while the call path `ActivityManagerService.finishForceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in01.svg)
 
+![](findings/binder/ams052.svg)
 
-### I2. `BugreportManagerServiceImpl.cancelBugreport` — **HIGH** (also held across its own outgoing transaction)
 
-This binder entry acquires `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+### 53. `ActivityManagerService.forceStopPackageInternalLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.forceStopPackageInternalLocked` (line 4408) holds `mProcLock` while the call path `ActivityTaskManagerService$LocalService.onForceStopPackage` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in02.svg)
 
+![](findings/binder/ams053.svg)
 
-### I3. `BugreportManagerServiceImpl.preDumpUiData` — **HIGH** (also held across its own outgoing transaction)
 
-This binder entry acquires `BugreportManagerServiceImpl.mLock`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+### 54. `ActivityManagerService.forceStopPackageInternalLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.forceStopPackageInternalLocked` (line 4417) holds `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in03.svg)
 
+![](findings/binder/ams054.svg)
 
-### I4. `BugreportManagerServiceImpl.retrieveBugreport` — **HIGH** (also held across its own outgoing transaction)
 
-This binder entry acquires `BugreportManagerServiceImpl$BugreportFileManager.mLock`, `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+### 55. `ActivityManagerService.grantUriPermission` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.grantUriPermission` (line 6878) holds the AMS monitor while the call path `UriGrantsManagerService$LocalService.checkGrantUriPermissionFromIntent` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in04.svg)
 
+![](findings/binder/ams055.svg)
 
-### I5. `BugreportManagerServiceImpl.startBugreport` — **HIGH** (also held across its own outgoing transaction)
 
-This binder entry acquires `BugreportManagerServiceImpl$BugreportFileManager.mLock`, `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+### 56. `ActivityManagerService.handleFollowUpOomAdjusterUpdate` holds the AMS monitor across an IPC at `ActivityManagerService.handleFollowUpOomAdjusterUpdate`
 
+`ActivityManagerService.handleFollowUpOomAdjusterUpdate` (line 5140) holds the AMS monitor while the call path `ProcessStateController.runFollowUpUpdate` → … → `ActivityManagerService.handleFollowUpOomAdjusterUpdate` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in05.svg)
 
+![](findings/binder/ams056.svg)
 
-### I6. `VibratorControlService.triggerVibrationParamsRequest` — **HIGH** (also held across its own outgoing transaction)
 
-This binder entry acquires `VibratorControlService.mLock`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+### 57. `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.handleProcessStartOrKillTimeoutLocked` (line 4546) holds `mProcLock` while the call path `ProcessList.removeProcessNameLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in06.svg)
 
+![](findings/binder/ams057.svg)
 
-### I7. `BatteryService$BinderService.dump`
 
-This binder entry acquires `BatteryService.mLock`; a remote caller blocks on them.
+### 58. `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.handleProcessStartOrKillTimeoutLocked` (line 4549) holds `mProcLock` while the call path `ContentProviderHelper.cleanupAppInLaunchingProvidersLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in07.svg)
 
+![](findings/binder/ams058.svg)
 
-### I8. `DiskStatsService.dump`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 59. `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.handleProcessStartOrKillTimeoutLocked` (line 4551) holds `mProcLock` while the call path `ActiveServices.processStartTimedOutLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in08.svg)
 
+![](findings/binder/ams059.svg)
 
-### I9. `DiskStatsService.reportCachedValues`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 60. `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.handleProcessStartOrKillTimeoutLocked` (line 4553) holds `mProcLock` while the call path `BroadcastQueueImpl.onApplicationTimeoutLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in09.svg)
 
+![](findings/binder/ams060.svg)
 
-### I10. `DiskStatsService.reportDiskWriteSpeed`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 61. `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.handleProcessStartOrKillTimeoutLocked` (line 4556) holds `mProcLock` while the call path `ProcessRecordInternal.killLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in10.svg)
 
+![](findings/binder/ams061.svg)
 
-### I11. `DiskStatsService.reportFreeSpace`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 62. `ActivityManagerService.handleProcessStartOrKillTimeoutLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.handleProcessStartOrKillTimeoutLocked` (line 4558) holds `mProcLock` while the call path `ActivityManagerService.removeLruProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in11.svg)
 
+![](findings/binder/ams062.svg)
 
-### I12. `DockObserver$BinderService.dump`
 
-This binder entry acquires `DockObserver.mLock`; a remote caller blocks on them.
+### 63. `ActivityManagerService.idleUids` holds the AMS monitor across an IPC at `ActivityManagerService.idleUids`
 
+`ActivityManagerService.idleUids` (line 15729) holds the AMS monitor while the call path `OomAdjuster.idleUidsLocked` → … → `ActivityManagerService.idleUids` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in12.svg)
 
+![](findings/binder/ams063.svg)
 
-### I13. `DynamicSystemService$GsiServiceCallback.onResult`
 
-This binder entry acquires `this`; a remote caller blocks on them.
+### 64. `ActivityManagerService.importanceTokenDied` holds the AMS monitor + `mPidsSelfLocked` across an IPC at `ActivityManagerService.importanceTokenDied`
 
+`ActivityManagerService.importanceTokenDied` (line 5968) holds the AMS monitor + `mPidsSelfLocked` while the call path `ActivityManagerService.clearProcessForegroundLocked` → … → `ActivityManagerService.importanceTokenDied` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in13.svg)
 
+![](findings/binder/ams064.svg)
 
-### I14. `LooperStatsService.dump`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 65. `ActivityManagerService.importanceTokenDied` holds the AMS monitor across an IPC at `ActivityManagerService.importanceTokenDied`
 
+`ActivityManagerService.importanceTokenDied` (line 5970) holds the AMS monitor while the call path `ProcessStateController.runUpdate` → … → `ActivityManagerService.importanceTokenDied` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in14.svg)
 
+![](findings/binder/ams065.svg)
 
-### I15. `RuntimeService.dump`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 66. `ActivityManagerService.inputDispatchingTimedOut` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.inputDispatchingTimedOut` (line 18396) holds the AMS monitor while the call path `ActivityManagerService.finishInstrumentationLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in15.svg)
 
+![](findings/binder/ams066.svg)
 
-### I16. `StorageManagerService$10.onStatus`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 67. `ActivityManagerService.killAllBackgroundProcesses` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killAllBackgroundProcesses` (line 3763) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in16.svg)
 
+![](findings/binder/ams067.svg)
 
-### I17. `StorageManagerService$13.onStatus`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 68. `ActivityManagerService.killAllBackgroundProcessesExcept` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killAllBackgroundProcessesExcept` (line 3800) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killAllBackgroundProcessesExceptLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in17.svg)
 
+![](findings/binder/ams068.svg)
 
-### I18. `StorageManagerService$3.onDiskCreated`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 69. `ActivityManagerService.killAppAtUsersRequest` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killAppAtUsersRequest` (line 9324) holds the AMS monitor while the call path `AppErrors.killAppAtUserRequestLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in18.svg)
 
+![](findings/binder/ams069.svg)
 
-### I19. `StorageManagerService$3.onDiskDestroyed`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 70. `ActivityManagerService.killBackgroundProcesses` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killBackgroundProcesses` (line 3734) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in19.svg)
 
+![](findings/binder/ams070.svg)
 
-### I20. `StorageManagerService$3.onDiskMetadataChanged`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 71. `ActivityManagerService.killPackageDependents` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killPackageDependents` (line 18794) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in20.svg)
 
+![](findings/binder/ams071.svg)
 
-### I21. `StorageManagerService$3.onDiskScanned`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 72. `ActivityManagerService.killProcessesBelowAdj` holds the AMS monitor + `mPidsSelfLocked` + `mProcLock` across an IPC at `ActivityManagerService.killProcessesBelowAdj`
 
+`ActivityManagerService.killProcessesBelowAdj` (line 8809) holds the AMS monitor + `mPidsSelfLocked` + `mProcLock` while the call path `ProcessRecordInternal.killLocked` → … → `ActivityManagerService.killProcessesBelowAdj` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in21.svg)
 
+![](findings/binder/ams072.svg)
 
-### I22. `StorageManagerService$3.onVolumeCreated`
 
-This binder entry acquires `StorageManagerService.mLock`, `UserController.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 73. `ActivityManagerService.killUid` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killUid` (line 8740) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in22.svg)
 
+![](findings/binder/ams073.svg)
 
-### I23. `StorageManagerService$3.onVolumeDestroyed`
 
-This binder entry acquires `StorageManagerService.mLock`, `StorageSessionController.mLock`, `StorageUserConnection.mSessionsLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 74. `ActivityManagerService.killUidForPermissionChange` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.killUidForPermissionChange` (line 8768) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in23.svg)
 
+![](findings/binder/ams074.svg)
 
-### I24. `StorageManagerService$3.onVolumeInternalPathChanged`
 
-This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 75. `ActivityManagerService.lambda$killPids$7` holds the AMS monitor across an IPC at `ActivityManagerService.lambda$killPids$7`
 
+`ActivityManagerService.lambda$killPids$7` (line 8723) holds the AMS monitor while the call path `ProcessRecordInternal.killLocked` → … → `ActivityManagerService.lambda$killPids$7` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in24.svg)
 
+![](findings/binder/ams075.svg)
 
-### I25. `StorageManagerService$3.onVolumeMetadataChanged`
 
-This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 76. `ActivityManagerService.lambda$updateAppProcessCpuTimeLPr$22` holds the AMS monitor across an IPC at `ActivityManagerService.lambda$updateAppProcessCpuTimeLPr$22`
 
+`ActivityManagerService.lambda$updateAppProcessCpuTimeLPr$22` (line 15349) holds the AMS monitor while the call path `ProcessRecordInternal.killLocked` → … → `ActivityManagerService.lambda$updateAppProcessCpuTimeLPr$22` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in25.svg)
 
+![](findings/binder/ams076.svg)
 
-### I26. `StorageManagerService$3.onVolumePathChanged`
 
-This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 77. `ActivityManagerService.lambda$updatePhantomProcessCpuTimeLPr$23` holds the AMS monitor across an IPC at `ActivityManagerService.lambda$updatePhantomProcessCpuTimeLPr$23`
 
+`ActivityManagerService.lambda$updatePhantomProcessCpuTimeLPr$23` (line 15378) holds the AMS monitor while the call path `PhantomProcessList.killPhantomProcessGroupLocked` → … → `ActivityManagerService.lambda$updatePhantomProcessCpuTimeLPr$23` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in26.svg)
 
+![](findings/binder/ams077.svg)
 
-### I27. `StorageManagerService$3.onVolumeStateChanged`
 
-This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 78. `ActivityManagerService.onWakefulnessChanged` holds the AMS monitor across an IPC at `ActivityManagerService.onWakefulnessChanged`
 
+`ActivityManagerService.onWakefulnessChanged` (line 7537) holds the AMS monitor while the call path `ActivityTaskManagerService.onScreenAwakeChanged` → … → `ActivityManagerService.onWakefulnessChanged` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in27.svg)
 
+![](findings/binder/ams078.svg)
 
-### I28. `StorageManagerService$8.onVolumeChecking`
 
-This binder entry acquires `StorageSessionController.mLock`, `StorageUserConnection$ActiveConnection.mLock`, `StorageUserConnection.mSessionsLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 79. `ActivityManagerService.onWakefulnessChanged` holds the AMS monitor across an IPC at `ActivityManagerService.onWakefulnessChanged`
 
+`ActivityManagerService.onWakefulnessChanged` (line 7541) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `ActivityManagerService.onWakefulnessChanged` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in28.svg)
 
+![](findings/binder/ams079.svg)
 
-### I29. `StorageManagerService$9.onFinished`
 
-This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+### 80. `ActivityManagerService.publishService` holds the AMS monitor across an IPC at `ActivityManagerService.publishService`
 
+`ActivityManagerService.publishService` (line 14106) holds the AMS monitor while the call path `ActiveServices.publishServiceLocked` → … → `ActivityManagerService.publishService` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in29.svg)
 
+![](findings/binder/ams080.svg)
 
-### I30. `SystemServer$SystemServerDumper.addDumpable`
 
-This binder entry acquires `SystemServer$SystemServerDumper.mDumpables`; a remote caller blocks on them.
+### 81. `ActivityManagerService.revokeUriPermission` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.revokeUriPermission` (line 6917) holds the AMS monitor while the call path `UriGrantsManagerService$LocalService.revokeUriPermission` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in30.svg)
 
+![](findings/binder/ams081.svg)
 
-### I31. `SystemServer$SystemServerDumper.dump`
 
-This binder entry acquires `SystemServer$SystemServerDumper.mDumpables`; a remote caller blocks on them.
+### 82. `ActivityManagerService.runInBackgroundDisabled` holds the AMS monitor across an IPC at `ActivityManagerService.runInBackgroundDisabled`
 
+`ActivityManagerService.runInBackgroundDisabled` (line 15739) holds the AMS monitor while the call path `ActivityManagerService.doStopUidLocked` → … → `ActivityManagerService.runInBackgroundDisabled` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in31.svg)
 
+![](findings/binder/ams082.svg)
 
-### I32. `ActivityManagerService$CacheBinder.dump`
 
-This binder entry acquires `ActivityManagerService.mProcLock`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `am.PackageList`, `PrintWriter.lock`; a remote caller blocks on them.
+### 83. `ActivityManagerService.scheduleApplicationInfoChanged` holds `mProcLock` across an IPC at `ActivityManagerService.scheduleApplicationInfoChanged`
 
+`ActivityManagerService.scheduleApplicationInfoChanged` (line 18823) holds `mProcLock` while the call path `ActivityManagerService.updateApplicationInfoLOSP` → … → `ActivityManagerService.scheduleApplicationInfoChanged` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in32.svg)
 
+![](findings/binder/ams083.svg)
 
-### I33. `ActivityManagerService$DbBinder.dump`
 
-This binder entry acquires `ActivityManagerService.mProcLock`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `am.PackageList`, `PrintWriter.lock`; a remote caller blocks on them.
+### 84. `ActivityManagerService.serviceDoneExecuting` holds the AMS monitor across an IPC at `ActivityManagerService.serviceDoneExecuting`
 
+`ActivityManagerService.serviceDoneExecuting` (line 14132) holds the AMS monitor while the call path `ActiveServices.serviceDoneExecutingLocked` → … → `ActivityManagerService.serviceDoneExecuting` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in33.svg)
 
+![](findings/binder/ams084.svg)
 
-### I34. `ActivityManagerService$GraphicsBinder.dump`
 
-This binder entry acquires `ActivityManagerService.mProcLock`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `am.PackageList`, `PrintWriter.lock`; a remote caller blocks on them.
+### 85. `ActivityManagerService.setForegroundServiceDelegate` holds the AMS monitor across an IPC at `ActivityManagerService.setForegroundServiceDelegate`
 
+`ActivityManagerService.setForegroundServiceDelegate` (line 18731) holds the AMS monitor while the call path `ActivityManagerService$LocalService.startForegroundServiceDelegate` → … → `ActivityManagerService.setForegroundServiceDelegate` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in34.svg)
 
+![](findings/binder/ams085.svg)
 
-### I35. `ActivityManagerService$IntentCreatorToken.completeFinalize`
 
-This binder entry acquires `ActivityManagerService.sIntentCreatorTokenCache`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+### 86. `ActivityManagerService.setForegroundServiceDelegate` holds the AMS monitor across an IPC at `ActivityManagerService.setForegroundServiceDelegate`
 
+`ActivityManagerService.setForegroundServiceDelegate` (line 18734) holds the AMS monitor while the call path `ActivityManagerService$LocalService.stopForegroundServiceDelegate` → … → `ActivityManagerService.setForegroundServiceDelegate` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in35.svg)
 
+![](findings/binder/ams086.svg)
 
-### I36. `ActivityManagerService$MemBinder.dump`
 
-This binder entry acquires `Clock.SYSTEM_CLOCK`, `ProtoLogImpl_842414855.class`, `ActiveServices.mAm`, `ActivityManagerConstants.mProcStateDebugUids`, `ActivityManagerService$1.this$0`, `ActivityManagerService.mCompanionAppUidsMap`, `ActivityManagerService.mDeliveryGroupPolicyIgnoredActions`, `ActivityManagerService.mOomAdjObserverLock`, `ActivityManagerService.mPidsSelfLocked`, `ActivityManagerService.mProcLock`, `ActivityManagerService.mProfileOwnerUids`, `ActivityManagerService.sActiveProcessInfoSelfLocked`, `AppErrors.mBadProcessLock`, `AppExitInfoTracker.mLock`, `AppProfiler.mProcessCpuTracker`, `AppProfiler.mProfilerLock`, `AppRestrictionController.mCarrierPrivilegedLock`, `AppRestrictionController.mLock`, `AppRestrictionController.mSettingsLock`, `AppRestrictionController.mSystemModulesCache`, `AppStartInfoTracker.mLock`, `am.BoundServiceSession`, `BroadcastController.mStickyBroadcasts`, `BroadcastQueueImpl.mBgConstants`, `BroadcastQueueImpl.mFgConstants`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `CachedAppOptimizer.mPhenotypeFlagLock`, `ComponentAliasResolver.mLock`, `ContentProviderConnection.mLock`, `FgsTempAllowList.mLock`, `LmkdConnection.mLmkdOutputStreamLock`, `LmkdConnection.mLmkdSocketLock`, `LmkdConnection.mReplyBufLock`, `am.PackageList`, `PendingIntentController.mLock`, `PendingTempAllowlists.mPendingTempAllowlist`, `PhantomProcessList.mLock`, `ProcessStatsService.mLock`, `ProviderMap.mAm`, `ServiceRecord$StartItem.uriPermissions`, `UidObserverController.mLock`, `UserController.mLock`, `GameManagerService$GamePackageConfiguration.mModeConfigLock`, `GameManagerService.mDeviceConfigLock`, `GameManagerService.mLock`, `GenericWindowPolicyController.mGenericWindowPolicyControllerLock`, `ImeTrackerService.mLock`, `ImfLock.class`, `UserDataRepository.mMutationLock`, `UserManagerService.mRestrictionsLock`, `UserManagerService.mUsersLock`, `WakeGestureListener.mLock`, `stats.BatteryExternalStatsWorker`, `stats.BatteryStatsImpl`, `BatteryStatsImpl.mPowerStatsUidResolver`, `PowerStatsCollector.mClock`, `PowerStatsStore.mFileLock`, `PowerStatsExporter.mPowerStatsAggregator`, `PowerStatsService.mInjector`, `UriGrantsManagerService.mLock`, `AnrTimer.mLock`, `AnrTimer.sAnrTimerList`, `AnrTimer.sErrors`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`, `AccessibilityWindowsPopulator.mLock`, `ActivityRecord.uriPermissions`, `ActivityTaskManagerService.mGlobalLock`, `wm.BackgroundLaunchProcessController`, `HighRefreshRateDenylist.mLock`, `wm.MirrorActiveUids`, `PackageConfigPersister.mLock`, `SnapshotCache.mLock`, `SnapshotPersistQueue.mLock`, `VisibleActivityProcessTracker.mProcMap`, `WindowOrientationListener.mLock`, `WindowProcessController.mPkgList`, `PrintWriter.lock`; a remote caller blocks on them.
+### 87. `ActivityManagerService.setHasTopUi` holds the AMS monitor across an IPC at `ActivityManagerService.setHasTopUi`
 
+`ActivityManagerService.setHasTopUi` (line 8505) holds the AMS monitor while the call path `ProcessStateController.runUpdate` → … → `ActivityManagerService.setHasTopUi` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in36.svg)
 
+![](findings/binder/ams087.svg)
 
-### I37. `AppProfiler$CpuBinder.dump`
 
-This binder entry acquires `Clock.SYSTEM_CLOCK`, `ProtoLogImpl_842414855.class`, `ActiveServices.mAm`, `ActivityManagerConstants.mProcStateDebugUids`, `ActivityManagerService$1.this$0`, `ActivityManagerService.mCompanionAppUidsMap`, `ActivityManagerService.mDeliveryGroupPolicyIgnoredActions`, `ActivityManagerService.mOomAdjObserverLock`, `ActivityManagerService.mPidsSelfLocked`, `ActivityManagerService.mProcLock`, `ActivityManagerService.mProfileOwnerUids`, `ActivityManagerService.sActiveProcessInfoSelfLocked`, `AppErrors.mBadProcessLock`, `AppExitInfoTracker.mLock`, `AppProfiler.mProcessCpuTracker`, `AppProfiler.mProfilerLock`, `AppRestrictionController.mCarrierPrivilegedLock`, `AppRestrictionController.mLock`, `AppRestrictionController.mSettingsLock`, `AppRestrictionController.mSystemModulesCache`, `AppStartInfoTracker.mLock`, `am.BoundServiceSession`, `BroadcastController.mStickyBroadcasts`, `BroadcastQueueImpl.mBgConstants`, `BroadcastQueueImpl.mFgConstants`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `CachedAppOptimizer.mPhenotypeFlagLock`, `ComponentAliasResolver.mLock`, `ContentProviderConnection.mLock`, `FgsTempAllowList.mLock`, `LmkdConnection.mLmkdOutputStreamLock`, `LmkdConnection.mLmkdSocketLock`, `LmkdConnection.mReplyBufLock`, `am.PackageList`, `PendingIntentController.mLock`, `PendingTempAllowlists.mPendingTempAllowlist`, `PhantomProcessList.mLock`, `ProcessStatsService.mLock`, `ProviderMap.mAm`, `ServiceRecord$StartItem.uriPermissions`, `UidObserverController.mLock`, `UserController.mLock`, `GameManagerService$GamePackageConfiguration.mModeConfigLock`, `GameManagerService.mDeviceConfigLock`, `GameManagerService.mLock`, `GenericWindowPolicyController.mGenericWindowPolicyControllerLock`, `ImeTrackerService.mLock`, `ImfLock.class`, `UserDataRepository.mMutationLock`, `UserManagerService.mRestrictionsLock`, `UserManagerService.mUsersLock`, `WakeGestureListener.mLock`, `stats.BatteryExternalStatsWorker`, `stats.BatteryStatsImpl`, `BatteryStatsImpl.mPowerStatsUidResolver`, `PowerStatsCollector.mClock`, `PowerStatsStore.mFileLock`, `PowerStatsExporter.mPowerStatsAggregator`, `PowerStatsService.mInjector`, `UriGrantsManagerService.mLock`, `AnrTimer.mLock`, `AnrTimer.sAnrTimerList`, `AnrTimer.sErrors`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`, `AccessibilityWindowsPopulator.mLock`, `ActivityRecord.uriPermissions`, `ActivityTaskManagerService.mGlobalLock`, `wm.BackgroundLaunchProcessController`, `HighRefreshRateDenylist.mLock`, `wm.MirrorActiveUids`, `PackageConfigPersister.mLock`, `SnapshotCache.mLock`, `SnapshotPersistQueue.mLock`, `VisibleActivityProcessTracker.mProcMap`, `WindowOrientationListener.mLock`, `WindowProcessController.mPkgList`, `PrintWriter.lock`; a remote caller blocks on them.
+### 88. `ActivityManagerService.setMemFactorOverride` holds the AMS monitor across an IPC at `ActivityManagerService.setMemFactorOverride`
 
+`ActivityManagerService.setMemFactorOverride` (line 10438) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `ActivityManagerService.setMemFactorOverride` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in37.svg)
 
+![](findings/binder/ams088.svg)
 
-### I38. `BroadcastRecord.dump`
 
-This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+### 89. `ActivityManagerService.setProcessImportant` holds the AMS monitor across an IPC at `ActivityManagerService.setProcessImportant`
 
+`ActivityManagerService.setProcessImportant` (line 6017) holds the AMS monitor while the call path `ProcessStateController.runUpdate` → … → `ActivityManagerService.setProcessImportant` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in38.svg)
 
+![](findings/binder/ams089.svg)
 
-### I39. `ContentProviderConnection.adjustCounts`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 90. `ActivityManagerService.setProcessLimit` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.setProcessLimit` (line 5942) holds the AMS monitor while the call path `ActivityManagerService.trimApplicationsLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in39.svg)
 
+![](findings/binder/ams090.svg)
 
-### I40. `ContentProviderConnection.decrementCount`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 91. `ActivityManagerService.setServiceForeground` holds the AMS monitor across an IPC at `ActivityManagerService.setServiceForeground`
 
+`ActivityManagerService.setServiceForeground` (line 13903) holds the AMS monitor while the call path `ActiveServices.setServiceForegroundLocked` → … → `ActivityManagerService.setServiceForeground` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in40.svg)
 
+![](findings/binder/ams091.svg)
 
-### I41. `ContentProviderConnection.incrementCount`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 92. `ActivityManagerService.setSystemProcess` holds the AMS monitor across an IPC at `ActivityManagerService.setSystemProcess`
 
+`ActivityManagerService.setSystemProcess` (line 1993) holds the AMS monitor while the call path `ProcessList.newProcessRecordLocked` → … → `ActivityManagerService.setSystemProcess` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in41.svg)
 
+![](findings/binder/ams092.svg)
 
-### I42. `ContentProviderConnection.initializeCount`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 93. `ActivityManagerService.setSystemProcess` holds the AMS monitor across an IPC at `ActivityManagerService.setSystemProcess`
 
+`ActivityManagerService.setSystemProcess` (line 2008) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `ActivityManagerService.setSystemProcess` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in42.svg)
 
+![](findings/binder/ams093.svg)
 
-### I43. `ContentProviderConnection.stableCount`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 94. `ActivityManagerService.setWindowManager` holds the AMS monitor across an IPC at `ActivityManagerService.setWindowManager`
 
+`ActivityManagerService.setWindowManager` (line 2044) holds the AMS monitor while the call path `ActivityTaskManagerService.setWindowManager` → … → `ActivityManagerService.setWindowManager` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in43.svg)
 
+![](findings/binder/ams094.svg)
 
-### I44. `ContentProviderConnection.startAssociationIfNeeded`
 
-This binder entry acquires `ContentProviderConnection.mProcStatsLock`, `am.PackageList`; a remote caller blocks on them.
+### 95. `ActivityManagerService.startInstrumentation` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startInstrumentation` (line 14648) holds the AMS monitor while the call path `ActivityManagerService.startInstrumentationOfSdkSandbox` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in44.svg)
 
+![](findings/binder/ams095.svg)
 
-### I45. `ContentProviderConnection.stopAssociation`
 
-This binder entry acquires `ContentProviderConnection.mProcStatsLock`; a remote caller blocks on them.
+### 96. `ActivityManagerService.startInstrumentation` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startInstrumentation` (line 14697) holds the AMS monitor + `mProcLock` while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in45.svg)
 
+![](findings/binder/ams096.svg)
 
-### I46. `ContentProviderConnection.toClientString`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 97. `ActivityManagerService.startInstrumentation` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startInstrumentation` (line 14704) holds the AMS monitor + `mProcLock` while the call path `ActivityManagerService.addAppLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in46.svg)
 
+![](findings/binder/ams097.svg)
 
-### I47. `ContentProviderConnection.toClientString`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 98. `ActivityManagerService.startInstrumentationOfSdkSandbox` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startInstrumentationOfSdkSandbox` (line 14831) holds `mProcLock` while the call path `ActivityManagerService.forceStopPackageLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in47.svg)
 
+![](findings/binder/ams098.svg)
 
-### I48. `ContentProviderConnection.toShortString`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 99. `ActivityManagerService.startInstrumentationOfSdkSandbox` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startInstrumentationOfSdkSandbox` (line 14843) holds `mProcLock` while the call path `ActivityManagerService.addAppLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in48.svg)
 
+![](findings/binder/ams099.svg)
 
-### I49. `ContentProviderConnection.toShortString`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 100. `ActivityManagerService.startIsolatedProcess` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startIsolatedProcess` (line 2947) holds the AMS monitor while the call path `ProcessList.startProcessLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in49.svg)
 
+![](findings/binder/ams100.svg)
 
-### I50. `ContentProviderConnection.toString`
 
-This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+### 101. `ActivityManagerService.startPersistentApps` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
 
+`ActivityManagerService.startPersistentApps` (line 7155) holds the AMS monitor while the call path `ActivityManagerService.addAppLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
 
-![](findings/binder/in50.svg)
+
+![](findings/binder/ams101.svg)
+
+
+### 102. `ActivityManagerService.startService` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`ActivityManagerService.startService` (line 13812) holds the AMS monitor while the call path `ActiveServices.startServiceLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams102.svg)
+
+
+### 103. `ActivityManagerService.stopAppForUserInternal` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`ActivityManagerService.stopAppForUserInternal` (line 4316) holds the AMS monitor + `mProcLock` while the call path `ActivityTaskManagerService$LocalService.onForceStopPackage` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams103.svg)
+
+
+### 104. `ActivityManagerService.stopAppForUserInternal` holds the AMS monitor + `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`ActivityManagerService.stopAppForUserInternal` (line 4318) holds the AMS monitor + `mProcLock` while the call path `ProcessList.killPackageProcessesLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams104.svg)
+
+
+### 105. `ActivityManagerService.stopAppForUserInternal` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`ActivityManagerService.stopAppForUserInternal` (line 4334) holds the AMS monitor while the call path `ActiveServices.bringDownDisabledPackageServicesLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams105.svg)
+
+
+### 106. `ActivityManagerService.stopAppForUserInternal` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`ActivityManagerService.stopAppForUserInternal` (line 4339) holds the AMS monitor while the call path `ActivityTaskManagerService$LocalService.resumeTopActivities` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams106.svg)
+
+
+### 107. `ActivityManagerService.stopServiceToken` holds the AMS monitor across an IPC at `ActivityManagerService.stopServiceToken`
+
+`ActivityManagerService.stopServiceToken` (line 13892) holds the AMS monitor while the call path `ActiveServices.stopServiceTokenLocked` → … → `ActivityManagerService.stopServiceToken` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams107.svg)
+
+
+### 108. `ActivityManagerService.tempAllowlistUidLocked` holds `mProcLock` across an IPC at `ActivityManagerService.tempAllowlistUidLocked`
+
+`ActivityManagerService.tempAllowlistUidLocked` (line 15863) holds `mProcLock` while the call path `ActivityManagerService.setUidTempAllowlistStateLSP` → … → `ActivityManagerService.tempAllowlistUidLocked` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams108.svg)
+
+
+### 109. `ActivityManagerService.trimApplications` holds the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`ActivityManagerService.trimApplications` (line 15922) holds the AMS monitor while the call path `ActivityManagerService.trimApplicationsLocked` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams109.svg)
+
+
+### 110. `ActivityManagerService.unbindBackupAgent` holds the AMS monitor across an IPC at `ActivityManagerService.unbindBackupAgent`
+
+`ActivityManagerService.unbindBackupAgent` (line 14411) holds the AMS monitor while the call path `ActivityManagerService.updateOomAdjLocked` → … → `ActivityManagerService.unbindBackupAgent` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams110.svg)
+
+
+### 111. `ActivityManagerService.unbindBackupAgent` holds the AMS monitor across an IPC at `ActivityManagerService.unbindBackupAgent`
+
+`ActivityManagerService.unbindBackupAgent` (line 14430) holds the AMS monitor while the call path `ProcessStateController.stopBackupTarget` → … → `ActivityManagerService.unbindBackupAgent` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams111.svg)
+
+
+### 112. `ActivityManagerService.unbindFinished` holds the AMS monitor across an IPC at `ActivityManagerService.unbindFinished`
+
+`ActivityManagerService.unbindFinished` (line 14121) holds the AMS monitor while the call path `ActiveServices.unbindFinishedLocked` → … → `ActivityManagerService.unbindFinished` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams112.svg)
+
+
+### 113. `ActivityManagerService.unbindService` holds the AMS monitor across an IPC at `ActivityManagerService.unbindService`
+
+`ActivityManagerService.unbindService` (line 14089) holds the AMS monitor while the call path `ActiveServices.unbindServiceLocked` → … → `ActivityManagerService.unbindService` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams113.svg)
+
+
+### 114. `ActivityManagerService.updateForceBackgroundCheck` holds the AMS monitor + `mProcLock` across an IPC at `ActivityManagerService.updateForceBackgroundCheck`
+
+`ActivityManagerService.updateForceBackgroundCheck` (line 9315) holds the AMS monitor + `mProcLock` while the call path `ProcessList.doStopUidForIdleUidsLocked` → … → `ActivityManagerService.updateForceBackgroundCheck` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams114.svg)
+
+
+### 115. `ActivityManagerService.updateServiceBindings` holds the AMS monitor across an IPC at `ActivityManagerService.updateServiceBindings`
+
+`ActivityManagerService.updateServiceBindings` (line 14076) holds the AMS monitor while the call path `ActiveServices.updateServiceBindingsLocked` → … → `ActivityManagerService.updateServiceBindings` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams115.svg)
+
+
+### 116. `ActivityManagerService.waitForApplicationBarrier` holds the AMS monitor + `mProcLock` across an IPC at `ActivityManagerService.waitForApplicationBarrier`
+
+`ActivityManagerService.waitForApplicationBarrier` (line 18524) holds the AMS monitor + `mProcLock` while the call path `CachedAppOptimizer.unfreezeTemporarily` → … → `ActivityManagerService.waitForApplicationBarrier` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams116.svg)
+
+
+### 117. `ActivityManagerShellCommand.runFreeze` holds `mProcLock` + the AMS monitor across an IPC at `ActivityManagerShellCommand.runFreeze`
+
+`ActivityManagerShellCommand.runFreeze` (line 1370) holds `mProcLock` + the AMS monitor while the call path `CachedAppOptimizer.unfreezeAppLSP` → … → `ActivityManagerShellCommand.runFreeze` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams117.svg)
+
+
+### 118. `AppErrors.handleShowAppErrorUi` holds `mProcLock` + `mBadProcessLock` across an IPC at `AppErrors.handleShowAppErrorUi`
+
+`AppErrors.handleShowAppErrorUi` (line 1086) holds `mProcLock` + `mBadProcessLock` while the call path `ProcessList$MyProcessMap.put` → … → `AppErrors.handleShowAppErrorUi` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams118.svg)
+
+
+### 119. `AppErrors.killAppAtUserRequestLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`AppErrors.killAppAtUserRequestLocked` (line 483) holds `mProcLock` while the call path `AppErrors.killAppImmediateLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams119.svg)
+
+
+### 120. `AppErrors.lambda$scheduleAppCrashLocked$0` holds `mProcLock` + the AMS monitor across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`AppErrors.lambda$scheduleAppCrashLocked$0` (line 569) holds `mProcLock` + the AMS monitor while the call path `AppErrors.killAppImmediateLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams120.svg)
+
+
+### 121. `AppErrors.makeAppCrashingLocked` holds `mProcLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`AppErrors.makeAppCrashingLocked` (line 796) holds `mProcLock` while the call path `ProcessErrorStateRecord.startAppProblemLSP` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams121.svg)
+
+
+### 122. `AppErrors.makeAppCrashingLocked` holds `mProcLock` + `mBadProcessLock` across an IPC at `IVold$Stub$Proxy.ensureAppDirsCreated`
+
+`AppErrors.makeAppCrashingLocked` (line 799) holds `mProcLock` + `mBadProcessLock` while the call path `AppErrors.handleAppCrashLSPB` → … → `IVold$Stub$Proxy.ensureAppDirsCreated` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams122.svg)
+
+
+### 123. `CachedAppOptimizer$FreezeHandler.freezeProcess` holds `mProcLock` across an IPC at `CachedAppOptimizer$FreezeHandler.freezeProcess`
+
+`CachedAppOptimizer$FreezeHandler.freezeProcess` (line 2103) holds `mProcLock` while the call path `CachedAppOptimizer$FreezeHandler.handleBinderFreezerFailure` → … → `CachedAppOptimizer$FreezeHandler.freezeProcess` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams123.svg)
+
+
+### 124. `CachedAppOptimizer$FreezeHandler.onBlockingFileLock` holds `mProcLock` + the AMS monitor across an IPC at `CachedAppOptimizer$FreezeHandler.onBlockingFileLock`
+
+`CachedAppOptimizer$FreezeHandler.onBlockingFileLock` (line 2221) holds `mProcLock` + the AMS monitor while the call path `CachedAppOptimizer.unfreezeAppLSP` → … → `CachedAppOptimizer$FreezeHandler.onBlockingFileLock` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams124.svg)
+
+
+### 125. `CachedAppOptimizer.forceFreezeForTest` holds `mProcLock` + the AMS monitor across an IPC at `CachedAppOptimizer.forceFreezeForTest`
+
+`CachedAppOptimizer.forceFreezeForTest` (line 2373) holds `mProcLock` + the AMS monitor while the call path `CachedAppOptimizer.unfreezeAppLSP` → … → `CachedAppOptimizer.forceFreezeForTest` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams125.svg)
+
+
+### 126. `CachedAppOptimizer.lambda$killProcess$2` holds `mProcLock` + the AMS monitor across an IPC at `CachedAppOptimizer.lambda$killProcess$2`
+
+`CachedAppOptimizer.lambda$killProcess$2` (line 2356) holds `mProcLock` + the AMS monitor while the call path `ProcessRecordInternal.killLocked` → … → `CachedAppOptimizer.lambda$killProcess$2` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams126.svg)
+
+
+### 127. `CachedAppOptimizer.unfreezeTemporarily` holds `mProcLock` across an IPC at `CachedAppOptimizer.unfreezeTemporarily`
+
+`CachedAppOptimizer.unfreezeTemporarily` (line 1139) holds `mProcLock` while the call path `CachedAppOptimizer.unfreezeAppLSP` → … → `CachedAppOptimizer.unfreezeTemporarily` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams127.svg)
+
+
+### 128. `OomAdjuster.updateOomAdjLocked` holds `mProcLock` across an IPC at `OomAdjuster.updateOomAdjLocked`
+
+`OomAdjuster.updateOomAdjLocked` (line 587) holds `mProcLock` while the call path `OomAdjuster.updateOomAdjLSP` → … → `OomAdjuster.updateOomAdjLocked` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams128.svg)
+
+
+### 129. `OomAdjusterImpl.performUpdateOomAdjPendingTargetsLocked` holds `mProcLock` across an IPC at `OomAdjusterImpl.performUpdateOomAdjPendingTargetsLocked`
+
+`OomAdjusterImpl.performUpdateOomAdjPendingTargetsLocked` (line 695) holds `mProcLock` while the call path `OomAdjusterImpl.partialUpdateLSP` → … → `OomAdjusterImpl.performUpdateOomAdjPendingTargetsLocked` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams129.svg)
+
+
+### 130. `ProcessErrorStateRecord.appNotResponding` holds `mProcLock` + the AMS monitor across an IPC at `ProcessErrorStateRecord.appNotResponding`
+
+`ProcessErrorStateRecord.appNotResponding` (line 692) holds `mProcLock` + the AMS monitor while the call path `ProcessErrorStateRecord.makeAppNotRespondingLSP` → … → `ProcessErrorStateRecord.appNotResponding` reaches an outgoing Binder transaction to another process. The AMS lock is pinned for the whole round-trip; a slow or dead remote stalls every thread waiting on the activity manager.
+
+
+![](findings/binder/ams130.svg)
+
+
+---
+
+## Incoming — a binder entry that takes an AMS lock
+
+(The 7 incoming AMS-lock entries are dominated by `dumpsys`, which legitimately walks every lock; the one of interest is below.)
+
+
+### `ActivityManagerService$IntentCreatorToken.completeFinalize`
+
+This binder entry acquires `sIntentCreatorTokenCache`, `mObservers`; a remote caller blocks on them.
