@@ -15,7 +15,7 @@
 //! Per-method extraction: a single forward pass that resolves each acquire to a
 //! lock identity, tracks the held-lock stack, and records the method summary.
 
-use super::{ground, subst_or_self, Edge, RawCall, Summary};
+use super::{ground, subst_or_self, Edge, FieldAccess, RawCall, Summary};
 use crate::juc::{self, LockCall};
 use crate::model::*;
 use std::collections::HashMap;
@@ -56,6 +56,7 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                 // aliases correctly and keeps access paths depth-1 (no blow-up).
                 let _ = base;
                 regs.insert(*dst, Lock::field(Root::Recv(class.clone()), field.clone()));
+                record_field(&mut s, m, class, field, false, &held, line_at(insn.offset));
             }
             Op::Iput { src, base, class, field } => {
                 if is_ctor {
@@ -79,6 +80,7 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                     }
                 }
                 let _ = base;
+                record_field(&mut s, m, class, field, true, &held, line_at(insn.offset));
             }
             Op::ConstClass { dst, class } => {
                 regs.insert(*dst, Lock::new(Root::ClassConst(class.clone())));
@@ -173,6 +175,21 @@ fn simple_value(l: &Lock) -> bool {
 
 fn arg_vals(regs: &HashMap<Reg, Lock>, inv: &Invoke) -> Vec<Option<Lock>> {
     inv.args.iter().map(|r| regs.get(r).cloned()).collect()
+}
+
+/// Record one field read/write with the locks held at that point, for the
+/// field-race analysis. Skipped for constructors (`<init>`/`<clinit>` writes are
+/// pre-publication) and compiler-synthesized methods (lambda bodies, nest-access
+/// bridges — their held-set is an artifact of desugaring, not real locking).
+fn record_field(s: &mut Summary, m: &Method, class: &str, field: &str, write: bool, held: &[Lock], line: Option<u32>) {
+    let synthetic = m.name.starts_with("lambda$")
+        || m.name.starts_with("access$")
+        || m.name.starts_with("-$$")
+        || m.name.contains("$$Nest");
+    if m.name == "<init>" || m.name == "<clinit>" || synthetic {
+        return;
+    }
+    s.field_access.push(FieldAccess { field: format!("{class}.{field}"), write, line, held: held.to_vec() });
 }
 
 fn record_call(s: &mut Summary, regs: &HashMap<Reg, Lock>, inv: &Invoke, held: &[Lock], line: Option<u32>, is_async: bool, alloc_ty: &HashMap<String, String>) {

@@ -13,9 +13,11 @@ No annotations (`@GuardedBy` is not needed), no instrumented build, no runtime
 trace. One dex is the whole program for analysis purposes, so lock identity and
 the call graph are resolved across the entire component.
 
-`lockdex binder` runs a related query on the same data: locks held across Binder
-IPC boundaries — a cross-process hazard rather than a same-process cycle. See
-[Locks across Binder IPC](#locks-across-binder-ipc).
+Two related queries run on the same data: `lockdex binder` finds locks held across
+Binder IPC boundaries (a cross-process hazard rather than a same-process cycle),
+and `lockdex races` reconstructs `@GuardedBy` and flags inconsistently-guarded
+fields. See [Locks across Binder IPC](#locks-across-binder-ipc) and
+[Inconsistently-guarded fields](#inconsistently-guarded-fields-guardedby).
 
 See [`docs/FINDINGS.md`](docs/FINDINGS.md) for example output — candidate
 lock-order inversions found in `system_server`, each with a diagram and the call
@@ -283,6 +285,34 @@ See [`docs/BINDER_FINDINGS.md`](docs/BINDER_FINDINGS.md) for what this finds on 
 real `system_server` — the ranked locks held across IPC and the four high-risk
 incoming entries, with diagrams.
 
+## Inconsistently-guarded fields (`@GuardedBy`)
+
+`lockdex races` reconstructs `@GuardedBy` from the bytecode: for each field it
+looks at the locks held on its reads and writes, and flags the fields that are
+guarded by one lock *almost* always — the remaining unguarded accesses are the
+suspected races.
+
+```sh
+lockdex races "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+    --src-root "$ANDROID_BUILD_TOP" --out-dir ./races-out
+```
+
+The held-set is interprocedural: a field written inside a helper counts as guarded
+when the helper is *always* reached under the lock (a meet over the method's
+callers). `final`/`volatile` fields, constructor writes, and compiler-synthesized
+methods are excluded. A field is only reported when a clear majority (≥2/3) of its
+writes hold one lock and some access still misses it — below that, the "guard" is
+usually a call-graph artifact rather than a real contract.
+
+`--out-dir` writes `races.md`, `races.json`, and a per-field diagram (the field,
+its guard in green, and the unguarded accessors in red); `--src-root` inlines the
+offending lines. `--field <substr>` / `--guard <substr>` narrow the report and emit
+every matching diagram. See [`docs/RACE_FINDINGS.md`](docs/RACE_FINDINGS.md).
+
+This is the noisiest of the three analyses — an over-approximate call graph makes
+the must-hold reasoning conservative, so treat it as a ranked worklist, not a
+verdict.
+
 ## Tuning the async-dispatch list
 
 Held locks are *severed* at calls that defer work to another thread, so a lock
@@ -343,6 +373,12 @@ transaction, the negative, an incoming entry that takes a lock, and the high-ris
 nested case). Those fixtures compile against a fake `android.os` package under
 `tests/binder/support` so they dex without the Android SDK; regenerate them with
 `cargo run --example regen_dex -- binder`.
+
+`tests/races/` is a third corpus for the field-race analysis, with `// RACE:` /
+`// NO_RACE:` contracts — covering an inconsistently-guarded field, a consistent
+one, the interprocedural guarded and unguarded cases (which exercise the must-hold
+propagation), and the `volatile` and constructor exclusions. Regenerate with
+`cargo run --example regen_dex -- races`.
 
 ## Scope and limits
 

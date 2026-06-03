@@ -16,7 +16,7 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use lockdex::{analyze, binder, export, graph, input, juc, report, verify};
+use lockdex::{analyze, binder, export, graph, input, juc, races, report, verify};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -87,6 +87,29 @@ enum Cmd {
         #[arg(long)]
         src_root: Option<PathBuf>,
         /// write binder.md + binder.json + per-finding dot/svg + pprof/hprof here
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
+        /// narrow a Soong out dir to jars whose name contains this
+        #[arg(long)]
+        scope: Option<String>,
+        /// extra async-dispatch methods (see `analyze --async-dispatch`)
+        #[arg(long)]
+        async_dispatch: Option<PathBuf>,
+    },
+    /// Reconstruct @GuardedBy and report fields whose guard is applied inconsistently.
+    Races {
+        /// .dex, .jar/.apk (multidex), or a Soong `out` directory
+        input: PathBuf,
+        /// only fields whose name contains this (emits all their diagrams)
+        #[arg(long)]
+        field: Option<String>,
+        /// only fields guarded by a lock whose name contains this
+        #[arg(long)]
+        guard: Option<String>,
+        /// source checkout to inline the unguarded accesses from (optional)
+        #[arg(long)]
+        src_root: Option<PathBuf>,
+        /// write races.md + races.json + per-field dot/svg here
         #[arg(long)]
         out_dir: Option<PathBuf>,
         /// narrow a Soong out dir to jars whose name contains this
@@ -220,6 +243,30 @@ fn main() -> Result<()> {
                     report.outgoing.len(),
                     report.incoming.len(),
                     report.incoming.iter().filter(|f| f.high).count(),
+                    d.display()
+                );
+            } else {
+                print!("{md}");
+            }
+        }
+        Cmd::Races { input, field, guard, src_root, out_dir, scope, async_dispatch } => {
+            let filter = races::Filter { field, guard };
+            let set = input::resolve(&input, scope.as_deref())?;
+            eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
+            let dex = input::parse_all(&set)?;
+            eprintln!("[lockdex] parsed {} classes", dex.classes.len());
+            let async_cfg = load_async_dispatch(async_dispatch.as_deref())?;
+            let an = analyze::analyze(&dex, &async_cfg);
+            let md = races::report(&an, &filter, src_root.as_deref(), out_dir.as_deref());
+            let report = races::filtered(&an.races, &filter);
+            if let Some(d) = &out_dir {
+                std::fs::create_dir_all(d)?;
+                std::fs::write(d.join("races.md"), &md)?;
+                std::fs::write(d.join("races.json"), serde_json::to_string_pretty(&report)?)?;
+                eprintln!("[lockdex] races.md + races.json + per-field dot/svg written to {}", d.display());
+                println!(
+                    "lockdex races: {} inconsistently-guarded field(s). See {}/races.md",
+                    report.fields.len(),
                     d.display()
                 );
             } else {

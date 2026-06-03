@@ -41,6 +41,9 @@ fn main() {
         let support = java_files(&root.join("tests/binder/support"));
         regen(&root.join("tests/binder"), &support);
     }
+    if want("races") {
+        regen(&root.join("tests/races"), &[]);
+    }
 }
 
 /// Compile and dex every top-level `<name>.java` in `dir`, alongside `extra`

@@ -28,6 +28,7 @@ pub mod graph;
 pub mod input;
 pub mod juc;
 pub mod model;
+pub mod races;
 pub mod report;
 pub mod source;
 pub mod verify;

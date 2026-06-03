@@ -25,17 +25,10 @@
 //!     entry also holds the lock across an outgoing transaction, it is the nested
 //!     cross-process pattern that actually deadlocks — flagged `high`.
 
-use super::{canonicalize, ground, PathIndex, RawCall, Summary};
-use crate::model::{Dex, Lock, Method, Root};
+use super::{canonicalize, ground, is_local_lock, PathIndex, RawCall, Summary};
+use crate::model::{Dex, Lock, Method};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-
-/// A lock with no cross-thread identity: an unresolved monitor (`Opaque`) or one
-/// taken on a freshly allocated object (`Alloc`). No other thread — let alone
-/// another process — can contend it, so it is not a Binder hazard.
-fn is_local(l: &Lock) -> bool {
-    matches!(l.root, Root::Opaque(_) | Root::Alloc(_))
-}
 
 /// A lock held at a call site that crosses (or reaches) a Binder transaction.
 #[derive(Serialize, Clone)]
@@ -179,7 +172,7 @@ fn held_names(call: &RawCall, holder: &Summary, key: &str, alias: &HashMap<Strin
     let mut names: Vec<String> = call
         .held
         .iter()
-        .filter(|l| !is_local(l))
+        .filter(|l| !is_local_lock(l))
         .map(|l| canonicalize(&ground(l, &holder.class, key), alias).name())
         .collect();
     names.sort();
@@ -266,7 +259,7 @@ pub(super) fn compute(
             let mut locks: Vec<String> = paths
                 .may
                 .get(&key)
-                .map(|ls| ls.iter().filter(|l| !is_local(l)).map(|l| l.name()).collect())
+                .map(|ls| ls.iter().filter(|l| !is_local_lock(l)).map(|l| l.name()).collect())
                 .unwrap_or_default();
             locks.sort();
             locks.dedup();

@@ -69,3 +69,12 @@ rust_test_host {
     rustlibs: ["liblockdex"],
     data: ["tests/binder/*.dex"],
 }
+
+rust_test_host {
+    name: "lockdex_races_test",
+    crate_name: "races",
+    srcs: ["tests/races.rs"],
+    edition: "2021",
+    rustlibs: ["liblockdex"],
+    data: ["tests/races/*.dex"],
+}

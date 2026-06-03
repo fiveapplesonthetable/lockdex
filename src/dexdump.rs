@@ -51,7 +51,46 @@ pub fn parse_dex(path: &Path) -> Result<Dex> {
         );
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    Ok(parse_dexdump_text(&text))
+    let mut dex = parse_dexdump_text(&text);
+    dex.final_or_volatile_fields = scan_field_flags(&text);
+    Ok(dex)
+}
+
+/// Collect `Class.field` keys declared `final` or `volatile`, scanning the field
+/// sections independently of the method parser (those fields are not race
+/// candidates: final is write-once, volatile is lock-free by design).
+fn scan_field_flags(text: &str) -> std::collections::HashSet<String> {
+    const ACC_FINAL: u32 = 0x10;
+    const ACC_VOLATILE: u32 = 0x40;
+    let mut out = std::collections::HashSet::new();
+    let mut class: Option<String> = None;
+    let mut in_fields = false;
+    let mut name: Option<String> = None;
+    for raw in text.lines() {
+        let t = raw.trim();
+        if let Some(rest) = t.strip_prefix("Class descriptor") {
+            class = Some(descriptor_to_dotted(&quoted(rest)));
+            in_fields = false;
+            name = None;
+        } else if t.starts_with("Static fields") || t.starts_with("Instance fields") {
+            in_fields = true;
+            name = None;
+        } else if t.starts_with("Direct methods") || t.starts_with("Virtual methods") {
+            in_fields = false;
+        } else if in_fields {
+            if let Some(rest) = t.strip_prefix("name") {
+                name = Some(quoted(rest));
+            } else if let Some(rest) = t.strip_prefix("access") {
+                let flags = hex_after_colon(rest);
+                if let (Some(n), Some(c)) = (name.take(), class.as_ref()) {
+                    if flags & (ACC_FINAL | ACC_VOLATILE) != 0 {
+                        out.insert(format!("{c}.{n}"));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Parse the textual output of `dexdump -d`.

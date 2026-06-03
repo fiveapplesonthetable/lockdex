@@ -20,6 +20,7 @@
 //! never fabricate a cycle.
 
 use serde::Serialize;
+use std::collections::HashSet;
 use std::fmt;
 
 /// A register number in a dex method (`v0`, `v12`, ...).
@@ -145,6 +146,9 @@ pub struct Class {
 #[derive(Debug, Default)]
 pub struct Dex {
     pub classes: Vec<Class>,
+    /// `Class.field` keys declared `final` or `volatile` — excluded from race
+    /// analysis (final isn't written after construction; volatile is lock-free).
+    pub final_or_volatile_fields: HashSet<String>,
 }
 
 /// Read/write mode for a `ReadWriteLock`-derived lock; `Plain` for monitors and

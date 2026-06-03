@@ -123,6 +123,17 @@ pub fn esc(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// Inline a fenced source window for `class_fqn:line` into `out`, resolving the
+/// class to a file under the indexed checkout. No-op if the file isn't found.
+pub fn snippet(out: &mut String, src: &mut Source, root: Option<&Path>, class_fqn: &str, line: usize) {
+    let Some(file) = src.file_for(class_fqn) else { return };
+    let shown = root.map(|r| rel(&file, r)).unwrap_or_else(|| file.display().to_string());
+    let _ = writeln!(out, "\n```text\n  {shown}:{line}");
+    let lines = src.lines(&file).to_vec();
+    print_ctx(out, &lines, line, 4, 2);
+    let _ = writeln!(out, "```");
+}
+
 /// Print `before`/`after` lines around `line` (1-based). Returns true if an async
 /// dispatch (post/execute/sendMessage) appears in the window.
 pub fn print_ctx(out: &mut String, lines: &[String], line: usize, before: usize, after: usize) -> bool {

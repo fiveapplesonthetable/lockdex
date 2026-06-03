@@ -31,7 +31,9 @@ mod binder;
 mod callgraph;
 mod extract;
 mod fixpoint;
+mod races;
 pub use binder::{BinderReport, IncomingFinding, OutgoingFinding};
+pub use races::{FieldRace, RaceReport, Violation};
 use callgraph::{build_supertypes, class_of_key, index_namesig, CallGraph, POLY_LIMIT};
 use fixpoint::may_acquire;
 
@@ -75,6 +77,16 @@ impl RawCall {
     }
 }
 
+/// One read or write of an instance field, with the locks held at that point
+/// (relative to the enclosing method). Feeds the field-race / @GuardedBy analysis.
+#[derive(Debug, Clone)]
+struct FieldAccess {
+    field: String,
+    write: bool,
+    line: Option<u32>,
+    held: Vec<Lock>,
+}
+
 #[derive(Debug, Clone, Default)]
 struct Summary {
     key: String,
@@ -83,6 +95,7 @@ struct Summary {
     first_acquire: Vec<Lock>,
     acquires: Vec<Lock>,
     calls: Vec<RawCall>,
+    field_access: Vec<FieldAccess>,
     value_summary: Option<Lock>,
     /// allocation sites created here: site -> type.
     allocs: Vec<(String, String)>,
@@ -108,6 +121,9 @@ pub struct Analysis {
     /// locks held across Binder IPC boundaries (a cross-process hazard, distinct
     /// from same-process deadlock cycles).
     pub binder: BinderReport,
+    /// fields whose guarding lock is applied inconsistently (`@GuardedBy`
+    /// reconstruction + the accesses that violate it).
+    pub races: RaceReport,
 }
 
 /// Enough of the call graph to reconstruct, for an order edge `A -> B`, the
@@ -319,7 +335,15 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         binder.outgoing.len(), binder.incoming.len(), tb.elapsed().as_secs_f64()
     );
 
-    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths, binder }
+    // --- field-race / @GuardedBy reconstruction ------------------------------
+    let tr = Instant::now();
+    let races = races::compute(&by_key, &resolved, &alias, &dex.final_or_volatile_fields);
+    eprintln!(
+        "[lockdex] field races: {} inconsistently-guarded field(s) in {:.1}s",
+        races.fields.len(), tr.elapsed().as_secs_f64()
+    );
+
+    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths, binder, races }
 }
 
 /// Assemble one method's contribution to the lock-order graph (pure / parallel).
@@ -479,6 +503,13 @@ fn ground(lock: &Lock, class: &str, key: &str) -> Lock {
     } else {
         lock.clone()
     }
+}
+
+/// A lock with no cross-thread identity: an unresolved monitor (`Opaque`) or one
+/// taken on a freshly allocated object (`Alloc`). It cannot guard shared state, so
+/// the binder and race analyses ignore it.
+pub(super) fn is_local_lock(lock: &Lock) -> bool {
+    matches!(lock.root, Root::Opaque(_) | Root::Alloc(_))
 }
 
 
