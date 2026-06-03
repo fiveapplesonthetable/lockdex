@@ -270,9 +270,18 @@ fn incoming_section(md: &mut String, an: &Analysis, inc: &[IncomingFinding], cap
 
     if !others.is_empty() {
         let _ = writeln!(md, "### Other entries — locks a remote caller can make them take\n");
-        for f in &others {
+        for (i, f) in others.iter().enumerate() {
             let locks = f.locks.iter().map(|l| short_lock(l)).collect::<Vec<_>>().join(", ");
-            let _ = writeln!(md, "- `{}` — {locks}", short_method(&f.entry));
+            let mut bullet = format!("- `{}` — {locks}", short_method(&f.entry));
+            let n = highs.len() + i;
+            if n < cap {
+                if let Some(d) = out_dir {
+                    if let Some(name) = render(d, &format!("in{:03}", n + 1), &incoming_dot(an, f)) {
+                        let _ = write!(bullet, "  — `{name}`");
+                    }
+                }
+            }
+            let _ = writeln!(md, "{bullet}");
         }
         let _ = writeln!(md);
     }

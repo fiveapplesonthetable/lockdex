@@ -306,9 +306,13 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
     let (may, iters) = may_acquire(&by_key, &resolved);
     eprintln!("[lockdex] lock-propagation fixpoint: {} rounds in {:.1}s", iters, tfp.elapsed().as_secs_f64());
 
-    // locks guaranteed held on entry to each method (a meet over its callers); a
-    // callee re-acquiring one of these is reentrant, so it carries no order edge.
-    let must = races::must_entry(&by_key, &resolved, &alias);
+    // Locks guaranteed held on entry to each method (a meet over its callers). Two
+    // variants: the deadlock view treats externally-callable methods as roots (sound
+    // reentrancy suppression — never hide a real edge); the race view credits the
+    // meet over the callers we can see (precise guard reconstruction — a helper whose
+    // every caller holds L is guarded by L, no naming convention needed).
+    let must = races::must_entry(&by_key, &resolved, &alias, true);
+    let must_races = races::must_entry(&by_key, &resolved, &alias, false);
 
     // --- edge assembly (parallel per method) ---------------------------------
     let tea = Instant::now();
@@ -375,7 +379,7 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
 
     // --- field-race detection (guard reconstruction) -------------------------
     let tr = Instant::now();
-    let races = races::compute(&by_key, &alias, &must, &dex.final_or_volatile_fields);
+    let races = races::compute(&by_key, &alias, &must_races, &dex.final_or_volatile_fields);
     eprintln!(
         "[lockdex] field races: {} inconsistently-guarded field(s) in {:.1}s",
         races.fields.len(), tr.elapsed().as_secs_f64()

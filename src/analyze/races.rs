@@ -74,11 +74,22 @@ fn guard_names(held: &[Lock], class: &str, key: &str, alias: &HashMap<String, Lo
 
 /// Locks guaranteed held whenever a method runs, by meet (intersection) over every
 /// caller of `held-at-the-call ∪ must_entry(caller)`. A method with no callers in
-/// the component (a public entry, a thread/Binder root) is unconstrained — `{}`.
+/// the component (a thread/Binder root) is unconstrained — `{}`.
+///
+/// `external_roots` controls the treatment of public/protected methods, which have
+/// callers we can't see. Two analyses need opposite answers:
+/// - deadlock reentrancy suppression must be *sound* (`external_roots = true`): an
+///   externally-callable method might be entered with no lock held, so it guarantees
+///   nothing — suppressing an order edge inside it could hide a real deadlock.
+/// - race guard reconstruction wants *precision* (`external_roots = false`): credit
+///   the meet over the in-component callers we *can* see. A `*Locked` helper all of
+///   whose callers hold `L` is guarded by `L` without reading any naming convention;
+///   if even one caller misses `L`, the meet drops it and the access stays flagged.
 pub(super) fn must_entry(
     by_key: &HashMap<String, Summary>,
     resolved: &HashMap<String, Vec<Vec<String>>>,
     alias: &HashMap<String, Lock>,
+    external_roots: bool,
 ) -> HashMap<String, HashSet<String>> {
     // caller -> [(callee, locks held at that call site)]
     let mut edges: HashMap<&str, Vec<(String, HashSet<String>)>> = HashMap::new();
@@ -101,16 +112,17 @@ pub(super) fn must_entry(
     }
 
     // `None` = ⊤ (not yet constrained). A method is a root (held-set `{}`) if it has
-    // no in-component caller OR is externally callable (public/protected) — such a
-    // method can be entered from outside with no lock held, so nothing is guaranteed.
+    // no in-component caller, or — when `external_roots` — if it is externally
+    // callable (public/protected) and so reachable with no lock held.
     let mut must: HashMap<String, Option<HashSet<String>>> = HashMap::new();
     let mut work: Vec<String> = Vec::new();
     for (k, s) in by_key {
-        if has_caller.contains(k) && !s.external {
-            must.insert(k.clone(), None);
-        } else {
+        let is_root = !has_caller.contains(k) || (external_roots && s.external);
+        if is_root {
             must.insert(k.clone(), Some(HashSet::new()));
             work.push(k.clone());
+        } else {
+            must.insert(k.clone(), None);
         }
     }
 
