@@ -34,7 +34,7 @@ mod fixpoint;
 mod races;
 pub use binder::{BinderReport, IncomingFinding, OutgoingFinding};
 pub use races::{FieldRace, RaceReport, Violation};
-use callgraph::{build_supertypes, class_of_key, index_namesig, CallGraph, POLY_LIMIT};
+use callgraph::{build_supertypes, index_namesig, CallGraph, POLY_LIMIT};
 use fixpoint::may_acquire;
 
 /// A call-graph edge for export: (caller key, callee key, lock held across the call).
@@ -110,6 +110,12 @@ struct Summary {
     alloc_inits: Vec<(String, String, Vec<Option<Lock>>)>,
     /// if this method is a `<init>`, captured fields: field -> formal it stores.
     ctor_captures: Vec<(String, u32)>,
+    /// if this `<init>` chains to another (`super(...)` / `this(...)`): the callee
+    /// `<init>` key and, per callee formal, which of *this* ctor's formals is passed
+    /// (so a field the super ctor captures from formal i is, here, captured from
+    /// whatever this ctor forwards into i). Threads injected locks down a class
+    /// hierarchy.
+    super_init: Option<(String, Vec<Option<u32>>)>,
     /// lock-field aliases learned from a `<init>`: `Class.field` is assigned a
     /// lock that lives elsewhere (`this.mLock = service.getLock()`), so the two
     /// name one object. Used to collapse a singleton lock split across fields.
@@ -246,16 +252,12 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
             for (site, ctor_key, args) in &s.alloc_inits {
                 let _ = site;
                 let Some(caps) = ctor_captures.get(ctor_key) else { continue };
-                let cclass = class_of_key(ctor_key);
-                for (field, formal) in caps {
-                    let key = format!("{cclass}.{field}");
+                for (key, formal) in caps {
                     let arg = args.get(*formal as usize).and_then(|o| o.clone());
                     let v = arg.filter(|v| {
-                        matches!(v.root, Root::Recv(_) | Root::Static(_))
-                            && !v.fields.is_empty()
-                            && v.name() != key
+                        matches!(v.root, Root::Recv(_) | Root::Static(_)) && &v.name() != key
                     });
-                    note(key, v, &mut seen);
+                    note(key.clone(), v, &mut seen);
                 }
             }
         }
@@ -465,12 +467,47 @@ fn assemble_one(
 }
 
 
+/// Per-`<init>` captured fields (`Class.field` -> formal), with super/this-ctor
+/// chains threaded in: a field captured by a super constructor from its formal `i` is
+/// also captured by a subclass constructor from whatever formal it forwards into `i`.
+/// This carries an injected lock (`super(service)` -> `this.mService = service`) down
+/// to the construction site, where the alias resolver can ground it.
 fn index_ctor_captures(by_key: &HashMap<String, Summary>) -> HashMap<String, Vec<(String, u32)>> {
-    by_key
+    let mut caps: HashMap<String, Vec<(String, u32)>> = by_key
         .iter()
-        .filter(|(_, s)| !s.ctor_captures.is_empty())
+        .filter(|(_, s)| !s.ctor_captures.is_empty() || s.super_init.is_some())
         .map(|(k, s)| (k.clone(), s.ctor_captures.clone()))
-        .collect()
+        .collect();
+    let supers: Vec<(String, String, Vec<Option<u32>>)> = by_key
+        .iter()
+        .filter_map(|(k, s)| s.super_init.as_ref().map(|(sk, m)| (k.clone(), sk.clone(), m.clone())))
+        .collect();
+    // Fixpoint: pull each super ctor's captures down through the formal remapping.
+    loop {
+        let mut changed = false;
+        for (k, sk, map) in &supers {
+            let Some(super_caps) = caps.get(sk).cloned() else { continue };
+            let add: Vec<(String, u32)> = super_caps
+                .iter()
+                .filter_map(|(fkey, sf)| match map.get(*sf as usize) {
+                    Some(Some(mf)) => Some((fkey.clone(), *mf)),
+                    _ => None,
+                })
+                .collect();
+            let entry = caps.entry(k.clone()).or_default();
+            for a in add {
+                if !entry.contains(&a) {
+                    entry.push(a);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    caps.retain(|_, v| !v.is_empty());
+    caps
 }
 
 /// alloc site -> { captured field -> value (parametric in the allocating method) }.
@@ -483,9 +520,11 @@ fn build_capture_map(
         for (site, ctor_key, args) in &s.alloc_inits {
             let Some(caps) = ctor_captures.get(ctor_key) else { continue };
             let mut fields = HashMap::new();
-            for (field, formal) in caps {
+            for (field_key, formal) in caps {
+                // capture paths key on the bare field name (`f$0`), not `Class.f$0`.
+                let field = field_key.rsplit('.').next().unwrap_or(field_key);
                 if let Some(Some(v)) = args.get(*formal as usize) {
-                    fields.insert(field.clone(), v.clone());
+                    fields.insert(field.to_string(), v.clone());
                 }
             }
             if !fields.is_empty() {

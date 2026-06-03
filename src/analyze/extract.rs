@@ -90,10 +90,13 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
             }
             Op::Iput { src, base, class, field } => {
                 if is_ctor {
+                    // Key the capture by the field's *declaring* class (which may be a
+                    // superclass), so it threads correctly through `super(...)`.
+                    let fkey = format!("{class}.{field}");
                     if let Some(Root::Param(idx)) = regs.get(src).map(|l| l.root.clone()) {
-                        s.ctor_captures.push((field.clone(), idx));
+                        s.ctor_captures.push((fkey, idx));
                     } else if regs.get(src).map(|l| matches!(l.root, Root::This)).unwrap_or(false) {
-                        s.ctor_captures.push((field.clone(), 0));
+                        s.ctor_captures.push((fkey, 0));
                     }
                     if let Some(v) = regs.get(src) {
                         if matches!(v.root, Root::Recv(_) | Root::Static(_)) && !v.fields.is_empty() {
@@ -141,8 +144,24 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                 last_ret = None;
                 if inv.name == "<init>" {
                     if let Some(r0) = inv.args.first() {
-                        if let Some(Lock { root: Root::Alloc(site), .. }) = regs.get(r0) {
-                            s.alloc_inits.push((site.clone(), inv.key(), arg_vals(&regs, inv)));
+                        match regs.get(r0).map(|l| &l.root) {
+                            Some(Root::Alloc(site)) => {
+                                s.alloc_inits.push((site.clone(), inv.key(), arg_vals(&regs, inv)));
+                            }
+                            // `super(...)` / `this(...)`: chained ctor on the receiver.
+                            Some(Root::This) if is_ctor && s.super_init.is_none() => {
+                                let map = inv
+                                    .args
+                                    .iter()
+                                    .map(|r| match regs.get(r).map(|l| &l.root) {
+                                        Some(Root::This) => Some(0),
+                                        Some(Root::Param(j)) => Some(*j),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                s.super_init = Some((inv.key(), map));
+                            }
+                            _ => {}
                         }
                     }
                 }
