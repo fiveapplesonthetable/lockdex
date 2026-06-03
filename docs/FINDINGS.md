@@ -1,191 +1,185 @@
-# Findings — lock-order analysis of `system_server`
+# Findings — lock-order deadlocks in `system_server`
 
-`lockdex` flagged 17 candidate lock-order cycles on a build's `services.jar`;
-`lockdex verify` traced each to source. Each was then read against AOSP
-`frameworks/base`: call paths followed, locks checked for object identity,
-`@GuardedBy`/threading annotations and any documented lock ordering accounted for.
+`lockdex` flagged 19 candidate lock-order cycles on a build's `services.jar`. Each
+of the 18 with ≤4 locks was traced to source by `lockdex verify` and then **read
+against AOSP** — call paths followed, locks checked for object identity, threads
+checked for real concurrency, documented orderings accounted for.
 
-Confident inversions come first, each with a fix. The candidates that did not
-survive review are at the end with the reason.
+**8 are real deadlocks** (distinct objects, both acquisition orders present, sites
+on different threads). They lead, each with a fix. The 10 that did not survive are
+listed after, with the reason — the two dominant causes are an over-approximated
+call path and **two differently-named locks that are the same object** (a lock
+passed into a constructor, so `A.mLock` and `B.mLock` are one monitor).
 
 A reported cycle is a real pair of opposite-order acquisitions in the bytecode.
-Deadlock additionally needs the two sites to run on different threads
-concurrently; that is checked per finding, not assumed.
+Deadlock additionally needs the two sites to run on different threads concurrently;
+that is checked per finding, not assumed.
 
 ---
 
-## Confident inversions
+## Confirmed deadlocks
 
 ### 1. `LockSettingsService.mSeparateChallengeLock` ⇄ `mSpManager`
 
-![](findings/cand04.svg)
+![](findings/real01.svg)
 
-`LockSettingsService` declares a canonical order in a class comment:
-`mSeparateChallengeLock -> mSpManager` (`LockSettingsService.java:262-263`). One
-path honors it; another inverts it, on a different thread.
+`LockSettingsService` documents the order `mSeparateChallengeLock -> mSpManager`
+(`LockSettingsService.java:262-263`). `setLockCredential` honors it — takes
+`mSeparateChallengeLock` (`:1921`) then `mSpManager` via `setLockCredentialInternal`
+(`:1980`), on a binder thread. The runnable posted by `onUserUnlocking` inverts it:
+`LockSettingsService$1.run` takes `mSpManager` (`:953`) then, via
+`tieProfileLockIfNecessary` → `getSeparateProfileChallengeEnabledInternal`, takes
+`mSeparateChallengeLock` (`:1368`), on the LSS `ServiceThread`. Two threads, the
+class's own documented order broken.
 
-- **`mSeparateChallengeLock` → `mSpManager`** — `setLockCredential` takes
-  `mSeparateChallengeLock` (`:1921`) then `mSpManager` via `setLockCredentialInternal`
-  (`:1980`). Binder thread; matches the documented order.
-- **`mSpManager` → `mSeparateChallengeLock`** — the runnable posted by
-  `onUserUnlocking` takes `mSpManager` (`:953`) then `mSeparateChallengeLock` via
-  `tieProfileLockIfNecessary` → `getSeparateProfileChallengeEnabledInternal`
-  (`:1368`). `mHandler` thread; **inverts** the documented order.
+**Fix.** Read the separate-challenge flag before entering the `mSpManager` section
+(or hoist `mSeparateChallengeLock` above `mSpManager` at `:953`).
 
-The locks are distinct objects (`:267`, `:289`) and the two sites run on a Binder
-thread and the `mHandler` thread, so they can interleave. The maintainers treat
-this order as load-bearing — that's why it's written down — and the unlock path
-breaks it.
+### 2. `UserController.mLock` ⇄ `UserManagerService.mUsersLock`
 
-**Fix.** On the unlock path, take `mSeparateChallengeLock` before `mSpManager`
-(the documented order), or read the separate-challenge flag — the only thing that
-needs `mSeparateChallengeLock` inside that block — before entering
-`synchronized (mSpManager)`.
+![](findings/real06.svg)
 
-### 2. `RemoteTaskStore.mRemoteDeviceTaskLists` ⇄ `mRemoteTaskListeners`
+Distinct objects (`UserController.java:300` `new Object()`;
+`UserManagerService.java:403` `installNewLock`). `finishUserStopped` holds `mLock`
+(`:1563`) and reaches `mUsersLock` via `updateUserToLockLU` → `getUserInfo`
+(`UserManagerService.java:1057`). `removeUserState` holds `mUsersLock` (`:7430`) and
+calls `getActivityManagerInternal().onUserRemoved` (`:7432`) → AMS →
+`UserController.onUserRemoved` taking `mLock` (`:3927`). Different threads, different
+users — they interleave.
 
-![](findings/cand06.svg)
+**Fix.** Move the `onUserRemoved` AMS callout outside the `synchronized (mUsersLock)`
+block in `removeUserState`.
 
-Two monitors in one class, taken in both orders, with no `@GuardedBy` or ordering
-comment anywhere in the file — the nesting discipline is implicit and the code
-breaks it.
+### 3. `OneTimePermissionUserManager$PackageInactivityListener.mInnerLock` ⇄ `mLock`
 
-- **`mRemoteDeviceTaskLists` → `mRemoteTaskListeners`** — `removeDevice` holds the
-  map lock (`:173`) then calls `notifyListeners()` → `synchronized (mRemoteTaskListeners)`
-  (`:188`). Runs on the transport-teardown thread (`onAssociationDisconnected`,
-  no Handler hop).
-- **`mRemoteTaskListeners` → `mRemoteDeviceTaskLists`** — `addListener` holds the
-  listener lock (`:128`) then calls `getMostRecentTasks()` → `synchronized
-  (mRemoteDeviceTaskLists)` (`:52`). Reached over Binder
-  (`ITaskContinuityManager.Stub.registerRemoteTaskListener`).
+![](findings/real03.svg)
 
-Distinct objects, different threads. A Binder client registering a listener while
-a device disconnects hits both orders. `notifyListeners` itself nests lock-2 then
-lock-1 in one chain, so the ordering is mixed by design.
+`mLock` is the manager's `new Object()` (`:75`); `mInnerLock` a per-listener
+`new Object()` (`:206`) — distinct, no documented order. The `ACTION_UID_REMOVED`
+receiver (`onReceive`, main thread) takes `mLock` (`:82`) then `listener.cancel()` →
+`mInnerLock` (`:394`). The `IUidObserver.onUidGone` callback (binder thread) takes
+`mInnerLock` via `updateUidState` (`:347`) then `mLock` via `onPackageInactiveLocked`
+(`:471`). Opposite orders, two threads.
 
-**Fix.** Establish one order and keep `getMostRecentTasks()` (which takes
-`mRemoteDeviceTaskLists`) out of any `synchronized (mRemoteTaskListeners)` block —
-snapshot the tasks before taking the listener lock. Collapsing both to a single
-lock is the robust option for a class this small.
+**Fix.** In `onReceive`, snapshot/remove the listener under `mLock`, then call
+`cancel()` after releasing `mLock`.
 
-### 3. `OneTimePermissionUserManager.mLock` ⇄ `PackageInactivityListener.mInnerLock`
+### 4. `HintManagerService.mLock` ⇄ `mSessionSnapshotMapLock`
 
-![](findings/cand08.svg)
+![](findings/real04.svg)
 
-The manager-wide `mLock` guards the uid→listener map (`@GuardedBy("mLock")`,
-`:98`); the per-listener `mInnerLock` guards that listener's alarm/uid-observer
-state. They are acquired in both orders across different threads.
+Distinct `new Object()`s (`:170`, `:182`); the file documents
+`mSessionSnapshotMapLock` *before* `mLock` (`:177-180`). `restoreSessionSnapshot`
+honors it — `mSessionSnapshotMapLock` (`:717`) then `mLock` (`:719`) — on a StatsD
+pull thread. `MyUidObserver.onUidGone` (FgThread) takes `mLock` (`:873`) then
+`AppHintSession.close()` → `mSessionSnapshotMapLock` (`:2264`), the forbidden order.
 
-- **`mInnerLock` → `mLock`** — the uid-observer callback
-  `onUidGone`/`onUidStateChanged` → `updateUidState` takes `mInnerLock` (`:347`) →
-  `onPackageInactiveLocked` takes `mLock` via `mListeners.remove(mUid)` (`:471`).
-  Oneway Binder thread.
-- **`mLock` → `mInnerLock`** — `mUninstallListener.onReceive` takes `mLock` (`:82`)
-  → `listener.cancel()` takes `mInnerLock` (`:394`). Main thread (receiver
-  registered with no Handler).
+**Fix.** In `onUidGone`, collect the sessions under `mLock`, then call `close()`
+after releasing `mLock`.
 
-Distinct objects, opposite order, concurrent threads (Binder observer vs. main-
-thread broadcast), on the same listener instance during an uninstall-while-active
-session.
+### 5. `RemoteTaskStore.mRemoteDeviceTaskLists` ⇄ `mRemoteTaskListeners`
 
-**Fix.** Pick a global order — `mLock → mInnerLock` is the natural one — and hold
-to it both ways. `onPackageInactiveLocked` takes `mInnerLock` then `mLock`; hoist
-the `mListeners.remove(mUid)` out of the `mInnerLock` region (or take `mLock`
-first) so it matches the `onReceive` side.
+![](findings/real05.svg)
 
-### 4. `BatteryController.mLock` ⇄ `LocalBluetoothBatteryManager.mBroadcastReceiver`
+Two distinct final fields of one `RemoteTaskStore` (`:38` HashMap, `:39`
+RemoteCallbackList). `removeDevice` takes `mRemoteDeviceTaskLists` (`:173`) then
+`notifyListeners` → `mRemoteTaskListeners` (`:188`). `addListener` takes
+`mRemoteTaskListeners` (`:128`) then `getMostRecentTasks` → `mRemoteDeviceTaskLists`
+(`:113`). Strict opposite order, both synchronous, reachable from different threads.
 
-![](findings/cand03.svg)
+**Fix.** Move `notifyListeners()` outside the `mRemoteDeviceTaskLists` block in
+`removeDevice`.
 
-`BatteryController`'s class javadoc notes it is touched from Binder threads, the
-UEventObserver thread, and its own Handler. One lock is a `BroadcastReceiver`
-object used as a monitor; the other is the controller's `mLock`. Both `@GuardedBy`
-sets are internally consistent, but the two are nested in opposite orders on
-different threads.
+### 6. `BatteryController.mLock` ⇄ `LocalBluetoothBatteryManager.mBroadcastReceiver`
 
-- **`mBroadcastReceiver` → `mLock`** — `onReceive` holds `mBroadcastReceiver`
-  (`:964`) then invokes the listener `handleBluetoothBatteryLevelChange`, which
-  takes `mLock` (`:387`). Main Looper (receiver registered without a scheduler).
-- **`mLock` → `mBroadcastReceiver`** — `onInputDeviceAdded` holds `mLock` (`:478`),
-  constructs a `UsiDeviceMonitor` → `addBatteryListener` → `synchronized
-  (mBroadcastReceiver)` (`:981`). DisplayThread (input listener on `mHandler`).
+![](findings/real02.svg)
 
-Distinct objects; the main-thread leg fires on a BT battery-level broadcast, the
-DisplayThread leg on adding/changing an input device — both normal operation,
-narrow window, nothing forbids the nesting.
+`mLock = new Object()`; `mBroadcastReceiver` is the inner manager's receiver field,
+`@GuardedBy("mBroadcastReceiver")` (`:951`). `registerBatteryListener`
+(`@BinderThread`, `:134`) holds `mLock` (`:137`) and reaches
+`synchronized(mBroadcastReceiver)` via `updateBluetoothBatteryMonitoring` →
+`addBatteryListener` (`:981`). The receiver's `onReceive` (DisplayThread looper)
+holds `mBroadcastReceiver` (`:964`) then `handleBluetoothBatteryLevelChange` →
+`mLock` (`:387`). Binder thread vs. looper.
 
-**Fix.** Never take `mBroadcastReceiver` while holding `mLock`: register the BT
-listener (`addBatteryListener`) outside the `synchronized (mLock)` region.
-Symmetrically, have `onReceive` copy the level and release `mBroadcastReceiver`
-before calling the listener that takes `mLock`.
+**Fix.** Register/unregister the battery listener outside the `mLock` block.
 
-### 5. `UserController.mLock` ⇄ `UserManagerService.mUsersLock`
+### 7. `ComputerControlSessionProcessor.mSessions` ⇄ `ImfLock.class`
 
-![](findings/cand01.svg)
+![](findings/real07.svg)
 
-Two service monitors across the `am`/`pm` boundary: `UserController.mLock` guards
-started-user state, `UserManagerService.mUsersLock` guards the user list. No
-documented order exists between them.
+Distinct (a per-instance `ArraySet` vs. a static class monitor). `createSession`
+holds `mSessions` (`:230`) and synchronously constructs a `VirtualDeviceImpl` whose
+ctor reaches `setVirtualDeviceInputMethodForAllUsers` →
+`synchronized(ImfLock.class)` (`InputMethodManagerService.java:5647`).
+`startInputOrWindowGainedFocusWithResult` holds `ImfLock.class` (`:3552`) then calls
+`isComputerControlDisplay` → `mSessions` (`:397`). Two binder threads.
 
-- **`mLock` → `mUsersLock`** — `finishUserStopped` holds `mLock` (`:1563`) and via
-  `updateUserToLockLU` → `getUserPropertiesInternal`/`hasUserRestriction` takes
-  `mUsersLock` (`UserManagerService.java:2732`). UserController `mHandler` thread.
-  (Reachability is gated by the delayed-locking config branch.)
-- **`mUsersLock` → `mLock`** — `removeUserState` holds `mUsersLock` (`:7430`) and
-  calls `getActivityManagerInternal().onUserRemoved` → `UserController.onUserRemoved`,
-  `synchronized (mLock)` (`UserController.java:3927`). Removal/Binder thread.
+**Fix.** Construct the session/VirtualDevice outside `synchronized(mSessions)`,
+taking the lock only for the `mSessions.add(...)`.
 
-Distinct objects, opposite order, different threads. The forward leg is config-
-dependent, which is why this sits below the four above.
+### 8. `ThermalManagerService` — `mSamples` → `mHalLock` → `mLock` (3-lock)
 
-**Fix.** Don't call across the service boundary while holding the other service's
-lock. On the removal side, move `getActivityManagerInternal().onUserRemoved(...)`
-out of `synchronized (mUsersLock)` (`UserManagerService.java:7430-7433`); on the
-stop side, hoist the UMS property/restriction queries in `updateUserToLockLU` out
-of the `mLock` region. Either break is sufficient.
+![](findings/real08.svg)
+
+Three distinct objects. `onThresholdChanged`/`onTemperatureChanged` hold
+`mTemperatureWatcher.mSamples` (`:203`/`:502`) and reach `mHalLock` via
+`forecastSkinTemperature` (`:2199`). The HAL death recipient `serviceDied` holds
+`mHalLock` (`:1216`) then `onTemperatureChanged` → `mLock` (`:482`).
+`onActivityManagerReady` holds `mLock` (`:253`) then `mSamples` (`:288`). The HAL can
+die during init, so the death thread, a HAL-callback thread, and the init thread
+interleave.
+
+**Fix.** In `serviceDied`, deliver reconnected temperatures outside the `mHalLock`
+block (post to the handler), enforcing `mLock → mSamples → mHalLock`.
 
 ---
 
-## Lower confidence — worth a runtime/lockdep check
+## Did not survive review
 
-### `BatteryStatsService.mStats` ⇄ `SYSTEM_CLOCK` (`BatteryHistoryStepDetailsProvider.mClock`)
+Ten candidates were read and rejected. The causes — and what each says about the
+tool's limits:
 
-![](findings/cand10.svg)
+**Two locks that are the same object.** **cand17**
+(`AutofillInlineSessionController.mLock` → `AbstractMasterSystemService.mLock` →
+`AbstractPerUserSystemService.mLock` → `ServiceNameBaseResolver.mLock`): three of the
+four are one object. `AbstractPerUserSystemService.mLock = lock` (`:75`) is the
+master's lock passed in (`new …PerUserService(this, mLock, …)`), threaded again into
+`Session` and `AutofillInlineSessionController` (`Session.java:551` comments "which
+is the same as mLock"). lockdex resolves constructor-parameter aliases but not
+through `super(...)` chains, so it sees four locks. (A real 2-lock
+`mLock ⇄ ServiceNameBaseResolver.mLock` AB-BA *does* hide inside.) This is a
+fixable lock-identity gap — `super()` argument threading.
 
-`mClock` is `Clock.SYSTEM_CLOCK`, a process-global singleton shared into the
-step-details provider — so the 3-lock SCC is really a two-lock pair, `mStats` vs.
-that clock monitor. Forward `mStats → mClock` is synchronous in
-`setBatteryStateLocked` → `requestUpdate` `else`-branch
-(`BatteryHistoryStepDetailsProvider.java:106`), on a Binder thread; reverse
-`mClock → mStats` is on the `mHandler` thread inside the `requestUpdate`
-`if`-branch `postDelayed` runnable (`:99` → `AppProfiler.java:2181`). Distinct
-monitors, opposite order, different threads. Whether both orders are ever in
-flight at once depends on which threads drive each, and the boot-gated `if`-branch
-(`!mSystemReady || mFirstUpdate`) leaves that unproven. A lockdep/trace check
-settles it.
+**Over-approximated call path** — a reported reverse edge cannot execute:
+- **cand2** (`DisplayPowerController.mLock` ⇄ `DisplayBrightnessController.mLock`):
+  the reverse path calls `switchMode(..., sendUpdate=false)`, severing the callback
+  into DPC before its lock is taken.
+- **cand7** (`mMultiplexerLock` ⇄ `mInitializationLock`): the reverse edge needs
+  `setState` to fire a listener that is still null while `mInitializationLock` is held.
+- **cand12** (`PrintManagerImpl.mLock` ⇄ `RemotePrintService.mLock`): the reverse
+  edge was stitched onto an unrelated `binderDied → onServiceDied` chain that holds
+  no `RemotePrintService.mLock`.
+- **cand15** (`mHandshakeLock` → `mTransports` → `mRemoteIn`): a CHA over-approx
+  across the abstract `Transport.sendMessage`; the `mRemoteIn` holder is
+  `RawTransport`, which has no `SecureChannel`, so the cycle never closes.
 
-### `ThermalManagerService.mLock` ⇄ `ThermalHalWrapper.mHalLock`
+**Reentrant outer lock held by an externally-callable method.** **cand9**
+(`mDeviceConnections` ⇄ `mDevicesByInfo`, documented order at `MidiService.java:86`),
+**cand14** (AudioService `mSettingsLock`/`mHdmiClientLock`/`mVolumeStateLock`,
+documented total order), **cand18** (AudioDeviceBroker, `mDeviceStateLock` outermost
+per `:1158-1162`). The "reverse" acquisition is a reentrant re-acquire of a lock the
+*caller* always holds. lockdex suppresses this when the re-acquiring method is
+private (all callers known) but **cannot** soundly when it is public — a public
+method can be entered from anywhere with no lock held. Dismissing these needs
+whole-program + thread knowledge and the AOSP locking conventions, which a sound,
+component-local analysis does not have.
 
-![](findings/cand14.svg)
-
-Distinct monitors. `mLock → mHalLock` runs once at boot (`onActivityManagerReady`,
-`:253` → `connectToHal`, `:1413`); `mHalLock → mLock` runs in the HAL death
-recipient (`serviceDied` holds `mHalLock` at `:1216`, then `resendCurrentTemperatures`
-→ service `onTemperatureChanged` takes `mLock` at `:482`). A real cross-thread
-inversion, but reachable only if the thermal HAL dies during boot bring-up — low
-probability, not impossible.
-
-**Fix (if confirmed).** Release `mHalLock` before the listener callout in
-`serviceDied` (post the resend), so HAL-handle state and the service lock never
-nest.
+**Single-threaded.** **cand13** (`mProcessCpuTracker`/`mClock`/`BatteryStatsImpl`):
+the three only interleave on the one `batterystats-handler` thread, and `mClock` is a
+shared `Clock.SYSTEM_CLOCK` singleton.
 
 ---
 
-The remaining candidates are not deadlocks: documented-order nestings
-(`AudioService`, `AudioDeviceBroker`, both with an explicit lock hierarchy) or
-async-severed back-edges (`Display`, `DeviceIdle`, `location`) — reentrant or
-unreachable. The most common false positive — a singleton lock stored under
-several field names (`mLock = service.getLock()`) — is resolved automatically:
-lockdex collapsed 2,700+ such aliases on this build, so the `Hdmi`, `Slice`,
-`JobScheduler`, and time-zone "cycles" that earlier reviews caught no longer
-appear.
+Read every reported cycle against the source before changing any locking. The
+verified eight above were; the fixes are specific.
