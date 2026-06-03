@@ -309,9 +309,14 @@ its guard in green, and the unguarded accessors in red); `--src-root` inlines th
 offending lines. `--field <substr>` / `--guard <substr>` narrow the report and emit
 every matching diagram. See [`docs/RACE_FINDINGS.md`](docs/RACE_FINDINGS.md).
 
-This is the noisiest of the three analyses — an over-approximate call graph makes
-the must-hold reasoning conservative, so treat it as a ranked worklist, not a
-verdict.
+The must-hold reasoning is sound given the call graph: a flagged access is
+genuinely reachable without the guard along a modeled path. Because direct and
+private calls are resolved exactly, a flag on a private call chain is guaranteed —
+the only way it is a false positive is if a *virtual* call on the path was resolved
+by RTA to a target the runtime never dispatches there (a spurious caller that
+poisons the intersection). So treat it as a ranked worklist whose precision is
+exactly the call graph's: start at the top and check the public methods on the
+path.
 
 ## Tuning the async-dispatch list
 

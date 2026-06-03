@@ -67,6 +67,66 @@ lock and emits the complete set of images for it.
 
 ---
 
+## 50 representative hold-sites
+
+Across the top locks — holder, source line, and the local call that leads to the
+transaction. Each has a call-path diagram in the `--out-dir` output.
+
+| held lock | held across N IPCs | example holder (file line) | via |
+|---|---|---|---|
+| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityDestroyed`:316 | `ActivityRecord.destroyed` |
+| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityPaused`:246 | `ActivityRecord.activityPaused` |
+| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityRelaunched`:343 | `ActivityRecord.finishRelaunching` |
+| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityStopped`:279 | `ActivityRecord.setState` |
+| `am.ActivityManagerService` | 56 | `ActivityManagerService.attachApplication`:4926 | `ActivityManagerService.attachApplicationLocked` |
+| `am.ActivityManagerService` | 56 | `ActivityManagerService.batterySendBroadcast`:2815 | `ActivityManagerService.broadcastIntentLocked` |
+| `am.ActivityManagerService` | 56 | `ActivityManagerService.bindBackupAgent`:14240 | `ActivityManagerService.startProcessLocked` |
+| `am.ActivityManagerService` | 56 | `ActivityManagerService.bindServiceInstance`:14045 | `ActiveServices.bindServiceLocked` |
+| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist`:16978 | `ActivityManagerService.setUidTempAllowlistStateLSP` |
+| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService.attachApplicationLocked`:4680 | `ActivityManagerService.clearProcessForegroundLocked` |
+| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService.cleanUpApplicationRecordLocked`:13573 | `ActivityManagerService.removeLruProcessLocked` |
+| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService.cleanUpApplicationRecordLocked`:13579 | `ProcessRecord.onCleanupApplicationRecordLSP` |
+| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$1.onReceive`:1162 | `AccessibilityManagerService.restoreEnabledAccessibilityServicesLocked` |
+| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$1.onReceive`:1168 | `AccessibilityManagerService.-$$Nest$mrestoreLegacyDisplayMagnificationNavBarIfNeededLocked` |
+| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$AccessibilityContentObserver.onChange`:6129 | `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked` |
+| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$AccessibilityContentObserver.onChange`:6133 | `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked` |
+| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastCloseSystemDialogs`:17687 | `ActivityManagerService.broadcastIntentLocked` |
+| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged`:17621 | `ActivityManagerService.broadcastIntentLocked` |
+| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged`:17639 | `ActivityManagerService.broadcastIntentLocked` |
+| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged`:17655 | `ActivityManagerService.broadcastIntentLocked` |
+| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperConnection.lambda$new$5`:1120 | `WallpaperManagerService.-$$Nest$mclearWallpaperLocked` |
+| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperObserver.updateWallpapers`:334 | `WallpaperManagerService.-$$Nest$mloadSettingsLocked` |
+| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperObserver.updateWallpapers`:371 | `WallpaperManagerService.bindWallpaperDescriptionLocked` |
+| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperObserver.updateWallpapers`:374 | `WallpaperManagerService.bindWallpaperComponentLocked` |
+| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$1.onReceive`:213 | `VibratorManagerService.-$$Nest$mmaybeClearCurrentAndNextSessionsLocked` |
+| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$1.onReceive`:220 | `VibratorManagerService.-$$Nest$mmaybeClearCurrentAndNextSessionsLocked` |
+| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$2.onOpChanged`:237 | `VibratorManagerService.-$$Nest$mmaybeClearCurrentAndNextSessionsLocked` |
+| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$ExternalVibrationCallbacks.onExternalVibrationReleased`:1965 | `VibratorManagerService.-$$Nest$mmaybeStartNextSessionLocked` |
+| `ImfLock.class` | 18 | `InputMethodBindingController$2.onBindingDied`:385 | `InputMethodBindingController.unbindCurrentMethod` |
+| `ImfLock.class` | 18 | `InputMethodBindingController$2.onServiceConnected`:397 | `InputMethodBindingController.unbindCurrentMethod` |
+| `ImfLock.class` | 18 | `InputMethodManagerService$Lifecycle.lambda$onUserStarting$1`:1097 | `InputMethodManagerService.onUserReadyLocked` |
+| `ImfLock.class` | 18 | `InputMethodManagerService$LocalServiceImpl.onSwitchKeyboardLayoutShortcut`:5844 | `InputMethodManagerService.-$$Nest$mswitchKeyboardLayoutLocked` |
+| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$3.onReceive`:1709 | `NotificationAttentionHelper.updateLightsLocked` |
+| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$3.onReceive`:1715 | `NotificationAttentionHelper.updateLightsLocked` |
+| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$3.onReceive`:1721 | `NotificationAttentionHelper.updateLightsLocked` |
+| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$SettingsObserver.onChange`:1787 | `NotificationAttentionHelper.updateLightsLocked` |
+| `VpnManagerService.mVpns` | 15 | `VpnManagerService.deleteVpnProfile`:340 | `Vpn.deleteVpnProfile` |
+| `VpnManagerService.mVpns` | 15 | `VpnManagerService.factoryReset`:984 | `VpnManagerService.setAlwaysOnVpnPackage` |
+| `VpnManagerService.mVpns` | 15 | `VpnManagerService.factoryReset`:994 | `VpnManagerService.setLockdownTracker` |
+| `VpnManagerService.mVpns` | 15 | `VpnManagerService.factoryReset`:1004 | `VpnManagerService.prepareVpn` |
+| `AppRestrictionController.mLock` | 15 | `AppBatteryTracker.dump`:859 | `AppRestrictionController.getUidBatteryExemptedUsageSince` |
+| `AppRestrictionController.mLock` | 15 | `AppBatteryTracker.updateBatteryUsageStatsAndCheck`:429 | `AppBatteryTracker.scheduleBatteryUsageStatsUpdateIfNecessary` |
+| `AppRestrictionController.mLock` | 15 | `AppFGSTracker.handleForegroundServicesChanged`:473 | `AppFGSTracker$PackageDurations.setForegroundServiceType` |
+| `AppRestrictionController.mLock` | 15 | `AppFGSTracker.handleForegroundServicesChanged`:243 | `AppFGSTracker$PackageDurations.addEvent` |
+| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.create`:460 | `BatteryStatsImpl.readLocked` |
+| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.doEnableOrDisable`:3062 | `BatteryStatsImpl.setPretendScreenOff` |
+| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.dumpUnmonitored`:3167 | `BatteryStatsImpl.resetAllStatsAndHistoryLocked` |
+| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.dumpUnmonitored`:3176 | `BatteryStatsImpl.resetAllStatsAndHistoryLocked` |
+| `ProcessList.mService` | 14 | `ProcessErrorStateRecord.appNotResponding`:682 | `ProcessRecordInternal.killLocked` |
+| `ProcessList.mService` | 14 | `ProcessErrorStateRecord.appNotResponding`:685 | `ProcessRecordInternal.killLocked` |
+
+---
+
 ## High-risk — incoming entries that hold a lock across their own outgoing call
 
 These four are the dangerous case: a method a remote process can invoke acquires a
