@@ -216,42 +216,44 @@ pub(super) fn compute(
         }
     }
 
-    // A field is racy if one lock guards a majority of its (≥2) writes but some
-    // access still misses it. Pick that dominant lock as the inferred guard.
-    // Every field with a dominant write-guard and at least one access that misses it
-    // is a candidate; the coverage baseline (what fraction of writes must hold the
-    // guard) is a presentation choice applied by the reporter, so the user can tune
-    // it. Sorted tie-breaks keep the chosen guard deterministic.
-    let mut guard_of: HashMap<String, String> = HashMap::new();
+    // The guard is the set of locks held by *every* write. Holding any one of them
+    // gives mutual exclusion against all writes (each write holds it too), so a read
+    // or write that holds *any* lock in the set is race-free — this is exactly the
+    // composite-/read-write-lock pattern (`@GuardedBy(anyOf={a,b})`, `@CompositeRWLock`)
+    // where writes co-hold several locks and a reader needs only one. When no lock is
+    // held by every write (writes don't share a lock — a real write/write hazard) the
+    // set falls back to the single most-common write lock, tie-broken toward the lock
+    // the reads also hold, so the unguarded write still shows as a violation.
+    let mut guard_of: HashMap<String, Vec<String>> = HashMap::new();
     for (field, st) in &stats {
         if st.writes == 0 {
             continue;
         }
-        // Dominant write-guard, tie-broken toward the lock the *reads* also hold —
-        // for a field under nested locks (`synchronized(a){ synchronized(b){…} }`) or
-        // an inner lock reached under an outer one, the lock held on *every* access is
-        // the real guard, not whichever shares the most writes by chance.
-        let Some((guard, &gcount)) = st.write_guard.iter().max_by(|a, b| {
-            a.1.cmp(b.1)
-                .then_with(|| st.read_guard.get(a.0).unwrap_or(&0).cmp(st.read_guard.get(b.0).unwrap_or(&0)))
-                .then_with(|| b.0.cmp(a.0))
-        }) else {
-            continue;
+        let every: Vec<String> =
+            st.write_guard.iter().filter(|(_, &c)| c == st.writes).map(|(l, _)| l.clone()).collect();
+        let accept = if !every.is_empty() {
+            every
+        } else {
+            let Some((guard, _)) = st.write_guard.iter().max_by(|a, b| {
+                a.1.cmp(b.1)
+                    .then_with(|| st.read_guard.get(a.0).unwrap_or(&0).cmp(st.read_guard.get(b.0).unwrap_or(&0)))
+                    .then_with(|| b.0.cmp(a.0))
+            }) else {
+                continue;
+            };
+            vec![guard.clone()]
         };
-        let read_guarded = st.read_guard.get(guard).copied().unwrap_or(0);
-        let misses = (st.writes - gcount) + (st.reads - read_guarded);
-        if misses > 0 {
-            guard_of.insert(field.to_string(), guard.clone());
-        }
+        guard_of.insert(field.to_string(), accept);
     }
 
-    // Pass 2: collect the violating sites for the racy field instances.
+    // Pass 2: an access violates the guard if it holds *none* of the acceptable locks.
     let mut violations: HashMap<String, Vec<Violation>> = HashMap::new();
     for (k, s) in by_key {
         for fa in &s.field_access {
             let key = gkey(fa);
-            let Some(guard) = guard_of.get(&key) else { continue };
-            if !effective(&fa.held, &s.class, k).contains(guard) {
+            let Some(accept) = guard_of.get(&key) else { continue };
+            let held = effective(&fa.held, &s.class, k);
+            if !accept.iter().any(|g| held.contains(g)) {
                 violations
                     .entry(key)
                     .or_default()
@@ -262,21 +264,21 @@ pub(super) fn compute(
 
     let mut fields: Vec<FieldRace> = guard_of
         .iter()
-        .map(|(field, guard)| {
+        .filter_map(|(field, accept)| {
+            let mut v = violations.remove(field.as_str()).filter(|v| !v.is_empty())?;
             let st = &stats[field.as_str()];
-            let mut v = violations.remove(field.as_str()).unwrap_or_default();
             // writes first, then by method/line; cap the list.
             v.sort_by(|a, b| (!a.write, &a.method, a.line).cmp(&(!b.write, &b.method, b.line)));
             v.dedup_by(|a, b| a.method == b.method && a.line == b.line && a.write == b.write);
             v.truncate(MAX_VIOLATIONS);
-            FieldRace {
+            Some(FieldRace {
                 field: field.clone(),
-                guard: guard.clone(),
+                guard: accept.join(" | "),
                 writes: st.writes,
                 reads: st.reads,
-                guarded_writes: *st.write_guard.get(guard).unwrap_or(&0),
+                guarded_writes: accept.iter().filter_map(|l| st.write_guard.get(l)).max().copied().unwrap_or(0),
                 violations: v,
-            }
+            })
         })
         .collect();
 
