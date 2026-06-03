@@ -1,450 +1,462 @@
 # Findings — field races in `system_server`
 
-`lockdex races` reconstructs each field's guard from behavior: the lock held on most
-of its writes is taken to be the lock that field is meant to protect, and any access
-that misses that lock is flagged. No `@GuardedBy` annotations are read — the guard is
-inferred from what the code actually does, then checked for consistency.
+`lockdex races` reconstructs each field's guard from behavior — the lock held on most
+of its accesses — and flags the accesses that miss it. The guard is inferred
+interprocedurally: a field written inside a helper counts as guarded when every
+caller of that helper holds the lock, so no `@GuardedBy` annotation or `*Locked`
+naming convention is read. (An earlier cut leaned on the deadlock variant of that
+analysis, which treats every public method as unlocked; the result was a top-100
+dominated by serialization and caller-holds-lock noise. Crediting the guard from the
+callers we can see moved the real bugs to the top — this is that list.)
 
-This is the 100 fields with the most write-violations on a build's `services.jar`,
-each traced to AOSP source and read by hand. **Three are real unsynchronized races.**
-The other 97 are precision limits of guard-by-inference, and they cluster into three
-causes worth naming, because each is a thing the analysis cannot see from bytecode
-alone:
+These are the 100 fields with the most write-conflicts on a build's `services.jar`,
+each traced to AOSP source and read by hand. **14 are real data races.** The rest split
+into two honest categories:
 
-1. **Guard generalization.** lockdex keys guards by `Class.field`, so a single
-   correctly-guarded write to one instance of a shared, public data class —
-   `ResolveInfo`, `ActivityInfo`, `UserInfo`, `SyncStatusInfo$Stats`,
-   `ZenRule` — projects the guard onto *every* instance of that field, and the
-   hundreds of unrelated, lock-free reads of other instances look like violations.
-   This is the dominant cause.
-2. **Lock identity the analysis can't match.** The access *is* under the right lock,
-   but lockdex names a different object: a lock passed into a constructor
-   (`MagnificationConnectionManager`, `Watchdog$HandlerChecker`), an inherited
-   `mLock` (`AbstractPerUserSystemService`), or a `ReentrantLock` driven by
-   `.lock()`/`.unlock()` rather than `synchronized` (`SecurityLogMonitor`).
-3. **Caller-holds-lock and fresh objects.** The write is in a `*Locked`/`*LPf`/`*LP`
-   helper whose callers hold the lock, or it initializes a freshly-allocated object
-   before it is published. Both are guarded by contract; neither is a race.
+- **IDENTITY** — the access *does* hold the guard, but under a lock object the tool
+  named differently: a lock passed into a constructor (`Watchdog$HandlerChecker`,
+  `MagnificationConnectionManager`), an inherited `mLock` (the autofill
+  `AbstractPerUserSystemService` / `Session` family), or `synchronized(this)` on a
+  receiver the tool reported by type. These are fixable by better lock-identity, not
+  bugs.
+- **BENIGN** — genuinely lock-free but unraceable: a thread-confined local
+  (`VoteSummary`, `LaunchParams`), a freshly-built object written before publication
+  (the `SyncStatusInfo`/`ActivityInfo` deserialization paths), a lock-free `dump()` of
+  a primitive, or a write inside a `catch`/after `wait()` that is still within the
+  monitor.
 
-The three real ones share a shape worth remembering: a field guarded by `synchronized`
-on every normal path, mutated once on a path that holds no lock — a deprecated public
-setter (`mVibrateSetting`), or a `TimerTask.run()` on a `Timer` thread
-(`mLocationRefreshTimer`, `mTimer`). Each is below with its diagram and source.
+The 14 real ones share recognizable shapes: a field written **after its
+`synchronized` block has already closed** (`UserInfo.flags`/`.partial`,
+`ActivityStarter.mLastStarter.*`), a **lock-free read-modify-write on a binder thread**
+(`UsbPortManager.mTransactionId`, `AudioService.mVibrateSetting`), or a **lock-free
+mutation of a published object** that concurrent lock-holding readers observe
+(`NetworkPolicy.limitBytes`, `AccessibilityWindowManager.mActiveWindowId`). Each is
+below with its diagram and the racing threads named.
 
 ---
 
-### 1. `BtHelper.mScoAudioState` — guarded by `BtHelper` (14/19 writes)
+### 1. `PowerManagerService.mDirty` — guarded by `mLock` (21/30 writes)
 ![](findings/race/race001.svg)
-**Verdict: IDENTITY.** The field is consistently `@GuardedBy("mDeviceBroker.mDeviceStateLock")`, not the `BtHelper` instance monitor; lockdex inferred the monitor because most writes sit in `synchronized` methods (`onScoAudioStateChanged` at `BtHelper.java:415`). The flagged non-`synchronized` accesses all hold `mDeviceStateLock`: `resetBluetoothSco` (`BtHelper.java:586`) is reached only under `synchronized (mDeviceStateLock)` (`AudioDeviceBroker.java:2064`), and `dump` runs from `AudioDeviceBroker.dump` while holding the broker lock. Same lock, different name.
+**Verdict: IDENTITY.** Every flagged method is a `*Locked` helper reached only from `updatePowerStateLocked`, which itself asserts `Thread.holdsLock(mLock)` at `PowerManagerService.java:2693`; the `mDirty = 0` write at line 2713 sits directly under that assert. All ~30 call sites of `updatePowerStateLocked()` and `userActivityNoUpdateLocked` are inside `synchronized(mLock)` frames. The tool couldn't propagate `mLock` through the deep helper chain.
 
-### 2. `WallpaperData.mBindSource` — guarded by `WallpaperManagerService.mLock` (7/10 writes)
+### 2. `UserInfo.flags` — guarded by `mUsersLock` (18/25 writes)
 ![](findings/race/race002.svg)
-**Verdict: CONVENTION.** `parseWallpaperAttributes` (`WallpaperDataParser.java:405`) writes a freshly-allocated `WallpaperData` during XML deserialization, before it is published to `mWallpaperMap`; `initializeFallbackWallpaper` (`WallpaperManagerService.java:4077`) likewise mutates the just-constructed `mFallbackWallpaper` and is only called from `loadSettingsLocked`. `connectLocked` (`WallpaperManagerService.java:823`) is a `*Locked` method, and the `dumpWallpaper` read (`:4133`) runs inside `synchronized (mLock)` at `:4188`.
+**Verdict: REAL.** `setUserEphemeralUnchecked` (`UserManagerService.java:3651`) and `setUserNonEphemeralUnchecked` (3634) mutate `userData.info.flags` *after* the `synchronized(mUsersLock)` block has closed (it ends at line 3650/3633), holding only `mPackagesLock`; `convertPreCreatedUserIfPossible:6743` mutates `flags` with no `mUsersLock` at all. Concurrent readers take `mUsersLock` — e.g. `getUserInfo` (2642) feeding `LocalService.isUserInitialized:8793`, plus `UserController.startProfiles:1900` — so a binder/handler thread can read `flags` under `mUsersLock` while these writers update it under a different (or no) lock.
 
-### 3. `ContentProviderConnection.waiting` — guarded by `ContentProviderHelper.mService` (5/7 writes)
+### 3. `BatteryStatsImpl.mDischargeScreenDozeUnplugLevel` — guarded by `BatteryStatsImpl` (6/9 writes)
 ![](findings/race/race003.svg)
-**Verdict: CONVENTION.** The write at `ContentProviderHelper.java:684` is inside the `synchronized (mService)` block opened at `:179`; the intervening `cpr.wait()` releases only `cpr`'s monitor and the write executes after the monitor is reacquired. The `onProviderPublishStatusLocked` write/read (`ContentProviderRecord.java:242`/`212`) and the `removeDyingProviderLocked` read (`ContentProviderHelper.java:1833`) are `*Locked` methods whose callers hold `mService`.
+**Verdict: IDENTITY.** The write at `BatteryStatsImpl.java:11726` and read at 11707 live in `updateNewDischargeScreenLevelLocked`/`updateOldDischargeScreenLevelLocked`, both `@GuardedBy("this")` private helpers reached only via `noteScreenStateLocked`/`prepareForDumpLocked`/`writeSummaryToParcel`/`resetAllStatsAndHistoryLocked`, all entered under `synchronized(this)`. The guard is the receiver monitor; the tool couldn't propagate it through the helper chain.
 
-### 4. `AccessibilityServiceInfo.crashed` — guarded by `AbstractAccessibilityServiceConnection.mLock` (2/3 writes)
+### 4. `BatteryStatsImpl.mDischargeScreenOffUnplugLevel` — guarded by `BatteryStatsImpl` (6/9 writes)
 ![](findings/race/race004.svg)
-**Verdict: CONVENTION.** `readInstalledAccessibilityServiceLocked` (`AccessibilityManagerService.java:2708`) is a `*Locked` method reached via `readConfigurationForUserStateLocked` (`:3581`) under the AMS `mLock`, which is the same Object instance handed to `AbstractAccessibilityServiceConnection.mLock` (constructed at `:322`, assigned at `AbstractAccessibilityServiceConnection.java:368`). It also mutates the freshly-parsed `parsedAccessibilityServiceInfos` list before it is published into `userState.mInstalledServices` at `:2714`.
+**Verdict: IDENTITY.** Identical structure: write at `BatteryStatsImpl.java:11734`, read at 11713, both inside `@GuardedBy("this")` discharge-level helpers reached only from `synchronized(this)` entry points. Same receiver-monitor identity the tool failed to equate.
 
-### 5. `SyncStatusInfo$Stats.numCancels` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 5. `BatteryStatsImpl.mDischargeScreenOnUnplugLevel` — guarded by `BatteryStatsImpl` (6/9 writes)
 ![](findings/race/race005.svg)
-**Verdict: CONVENTION.** `readSyncStatusStatsLocked` (`SyncStorageEngine.java:2303`) writes into a `SyncStatusInfo` freshly built from disk (`:2174`) during proto load under `readStatusLocked`, before publication. The SyncManager lambda read (`SyncManager.java:2538`) operates on a defensive deep copy from `getCopyOfAuthorityWithSyncStatus` (`new SyncStatusInfo(...)` at `:1534`), and `writeStatusStatsLocked` (`:2426`) runs inside `synchronized (mAuthorities)`.
+**Verdict: IDENTITY.** Same as 3 and 4: write at `BatteryStatsImpl.java:11724`, read at 11701, under `@GuardedBy("this")` helpers entered via `synchronized(this)` callers. Receiver-monitor identity, not a real gap.
 
-### 6. `SyncStatusInfo$Stats.numFailures` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 6. `WallpaperData.mBindSource` — guarded by `WallpaperManagerService.mLock` (7/10 writes)
 ![](findings/race/race006.svg)
-**Verdict: CONVENTION.** Identical pattern: `readSyncStatusStatsLocked` (`SyncStorageEngine.java:2299`) populates a not-yet-published `SyncStatusInfo` during proto deserialization; the `SyncManager.java:2537` read is on the deep copy returned by `getCopyOfAuthorityWithSyncStatus` (`:1534`); `writeStatusStatsLocked` (`:2426`) executes under `synchronized (mAuthorities)`.
+**Verdict: BENIGN.** `parseWallpaperAttributes:405` writes a freshly-constructed, still-thread-local `WallpaperData` built in `loadSettingsLocked` (`WallpaperDataParser.java:157`) before publication; `initializeFallbackWallpaper:4077` writes the fresh `mFallbackWallpaper` and `connectLocked:823` writes under `mLock`. The only two reads are serialization under `mLock` and `dump()`. No concurrent unguarded read of a mutating value.
 
-### 7. `SyncStatusInfo$Stats.numSourceFeed` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 7. `WallpaperData.mWhich` — guarded by `WallpaperManagerService.mLock` (6/9 writes)
 ![](findings/race/race007.svg)
-**Verdict: CONVENTION.** Same shape: write at `SyncStorageEngine.java:2326` is into a fresh proto-loaded `SyncStatusInfo`; the `SyncManager.java:2533` read targets the copy from `getCopyOfAuthorityWithSyncStatus` (`:1534`); `writeStatusStatsLocked` (`:2433`) holds `mAuthorities`.
+**Verdict: BENIGN.** The flagged writes set `mWhich` on freshly-constructed unpublished objects during `loadSettingsLocked` (`WallpaperDataParser.java:207`/214) or on the fresh fallback object at `initializeFallbackWallpaper:4082`. `mWhich` is set-once at load/fallback-init; the lock-free FileObserver-thread read at `WallpaperManagerService.java:281` observes a stably-published value, not a concurrent mutation.
 
-### 8. `SyncStatusInfo$Stats.numSourceLocal` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 8. `ZenModeConfig$ZenRule.condition` — guarded by `ZenModeHelper.mConfigLock` (9/11 writes)
 ![](findings/race/race008.svg)
-**Verdict: CONVENTION.** Write at `SyncStorageEngine.java:2310` populates an unpublished `SyncStatusInfo` during proto load; `SyncManager.java:2529` reads the deep copy from `getCopyOfAuthorityWithSyncStatus` (`:1534`); `writeStatusStatsLocked` (`:2429`) runs under `synchronized (mAuthorities)`.
+**Verdict: BENIGN.** Both writes (`ZenModeHelper.java:1660`, 1674) clear `condition` on a freshly-parsed local `config` (`ZenModeConfig.readXml` at line 1654) and its rules, before that config is ever published into `mConfig`. The object is thread-local and unpublished at write time.
 
-### 9. `SyncStatusInfo$Stats.numSourceOther` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 9. `ZenModeConfig$ZenRule.name` — guarded by `ZenModeHelper.mConfigLock` (4/6 writes)
 ![](findings/race/race009.svg)
-**Verdict: CONVENTION.** Same pattern: `readSyncStatusStatsLocked` (`SyncStorageEngine.java:2306`) writes a fresh proto-loaded object; the `SyncManager.java:2535` read is on the `getCopyOfAuthorityWithSyncStatus` copy (`:1534`); `writeStatusStatsLocked` (`:2428`) holds `mAuthorities`.
+**Verdict: REAL.** `updateZenRulesOnLocaleChange` calls `updateRuleStringsForCurrentLocale(mContext, mDefaultConfig)` at `ZenModeHelper.java:1060` — *outside* the `synchronized(mConfigLock)` that begins at line 1061 — mutating `name` on the long-lived shared `mDefaultConfig` rules (writes at 2260/2263). On a different thread, `readXml` reads those same `mDefaultConfig.automaticRules[].name` under `mConfigLock` (`ZenModeHelper.java:1717-1718`). Locale-change broadcast thread vs. restore/`readXml` thread: a real race.
 
-### 10. `SyncStatusInfo$Stats.numSourcePeriodic` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 10. `BroadcastQueueImpl.mRunningColdStart` — guarded by `BroadcastQueue.mService` (5/7 writes)
 ![](findings/race/race010.svg)
-**Verdict: CONVENTION.** Write at `SyncStorageEngine.java:2322` populates a not-yet-published `SyncStatusInfo` during deserialization; `SyncManager.java:2532` reads the defensive copy from `getCopyOfAuthorityWithSyncStatus` (`:1534`); `writeStatusStatsLocked` (`:2432`) executes under `synchronized (mAuthorities)`.
+**Verdict: IDENTITY.** Every flagged method — `clearRunningColdStart:748`, `onApplicationAttachedLocked:669`, `checkPendingColdStartValidityLocked`, `clearInvalidPendingColdStart`, `isPendingColdStartValid`, `demoteFromRunningLocked`, and `dumpProcessQueues` (via `@GuardedBy("mService") dumpLocked`) — is `@GuardedBy("mService")` and runs under `synchronized(mService)`. `mService` is the constructor-injected `final ActivityManagerService` (`BroadcastQueue.java:48`); the tool couldn't equate that injected-field monitor to the lock held several frames up.
 
-### 11. `SyncStatusInfo$Stats.numSourcePoll` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 11. `ContentProviderConnection.waiting` — guarded by `ContentProviderHelper.mService` (5/7 writes)
 ![](findings/race/race011.svg)
-**Verdict: CONVENTION.** The flagged write at `SyncStorageEngine.java:2314` is in `readSyncStatusStatsLocked`, a `*Locked` method reached only from the constructor's `readStatusLocked()` (line 554) on a fresh unpublished engine and from `mAuthorities`-synchronized callers. The two read sites are `writeStatusStatsLocked` (another `*Locked` method) and a `SyncManager` dump lambda operating on the deep copy returned by `getCopyOfAuthorityWithSyncStatus`, which builds the copy under `synchronized (mAuthorities)` (`SyncStorageEngine.java:1449`). No unguarded reachable access.
+**Verdict: IDENTITY.** The flagged writes `conn.waiting = true/false` run inside `synchronized (cpr)` after `mService` is released (`ContentProviderHelper.java:654-688`, the `synchronized(mService)` block closes at line 647), and the publish-side writes/reads run inside `synchronized (dst)` (`ContentProviderRecord.onProviderPublishStatusLocked:208`). The real guard is the ContentProviderRecord's own monitor (the field comment says "Protected by the provider lock"), not `mService` — both waiter and publisher hold the same `cpr` lock. The only lock-free read is `toClientString:178`, a dump path.
 
-### 12. `SyncStatusInfo$Stats.numSourceUser` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 12. `OomAdjuster.mOomAdjUpdateOngoing` — guarded by `ActivityManagerService.mProcLock` (6/9 writes)
 ![](findings/race/race012.svg)
-**Verdict: CONVENTION.** Identical pattern: write at `SyncStorageEngine.java:2318` is in `readSyncStatusStatsLocked` (constructor/locked paths only); the read at `SyncManager.java:2534` is on a copy produced under `synchronized (mAuthorities)` (`SyncStorageEngine.java:1453`), and the read at `SyncStorageEngine.java:2431` is in the `*Locked` writer. False positive.
+**Verdict: IDENTITY.** The field is declared `@GuardedBy("mService")` (`OomAdjuster.java:349-350`) and every access — including the flagged sites in `updateOomAdjPendingTargetsLocked` (`OomAdjuster.java:855/861/865`) — holds `mService`. The tool latched onto `mProcLock` (held additionally at the `updateOomAdjLSP:591` sites) and reported the `mService`-only sites as violations, but `mService` is the consistent guard held on every path.
 
-### 13. `SyncStatusInfo$Stats.numSyncs` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 13. `VoteSummary.height` — guarded by `DisplayModeDirector.mLock` (4/6 writes)
 ![](findings/race/race013.svg)
-**Verdict: CONVENTION.** Same structure: `readSyncStatusStatsLocked` write at `SyncStorageEngine.java:2296`, `writeStatusStatsLocked` read at line 2425, and the `SyncManager.java:2536` dump-lambda read on the lock-built copy from `getCopyOfAuthorityWithSyncStatus` (`SyncStorageEngine.java:1448`). All on locked paths or a safely-published copy.
+**Verdict: BENIGN.** `VoteSummary` is never a field; the only instances are method-locals created under `mLock` in `DisplayModeDirector.getDesiredDisplayModeSpecs` (`DisplayModeDirector.java:308/348`) that never escape the stack frame. `SizeVote.updateSummary` (`SizeVote.java:59-65`) mutates that thread-confined local and `VoteSummary.toString:438` reads it, all on the same thread holding `mLock`. Unpublished, so no other thread can observe it.
 
-### 14. `SyncStatusInfo$Stats.totalElapsedTime` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 14. `VoteSummary.maxRenderFrameRate` — guarded by `DisplayModeDirector.mLock` (5/7 writes)
 ![](findings/race/race014.svg)
-**Verdict: CONVENTION.** Write at `SyncStorageEngine.java:2292` is in the `*Locked` deserializer; read at line 2424 is in `writeStatusStatsLocked` (`*Locked`); read at `SyncManager.java:2539` is on the copy returned under `synchronized (mAuthorities)`. No genuine race.
+**Verdict: BENIGN.** Same thread-confined-local pattern as #13: `RefreshRateVote$PhysicalVote/RenderVote.updateSummary` (`RefreshRateVote.java:108/71`) mutate a `VoteSummary` that exists only as a stack-local in `getDesiredDisplayModeSpecs`, created and consumed under `mLock`, never stored or published.
 
-### 15. `ActivityInfo.enabled` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 15. `VoteSummary.width` — guarded by `DisplayModeDirector.mLock` (4/6 writes)
 ![](findings/race/race015.svg)
-**Verdict: CONVENTION.** The write at `PackageManagerService.java:3110` is in `setUpInstantAppInstallerActivityLP`, whose only caller chain (`updateInstantAppInstallerLocked` → `InstallPackageHelper:2524` / `DeletePackageHelper:264` / PMS init) executes under `synchronized (mPm.mLock)`, and `mPm.mLock == injector.getLock()` (`PackageManagerService.java:1864`, `Injector:283`) — same object as the named guard (also IDENTITY). The reads in `LauncherAppsImpl`/`ShortcutService`/`RecentTasks` operate on `ResolveInfo.activityInfo` snapshots returned from Computer queries, not the live `mInstantAppInstallerActivity`.
+**Verdict: BENIGN.** Identical to #13/#14: `SizeVote.updateSummary` (`SizeVote.java:59/64`) writes a method-local `VoteSummary` confined to `getDesiredDisplayModeSpecs` under `mLock`; the object never escapes the frame, so the access is lock-free but unraceable.
 
-### 16. `ActivityInfo.exported` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 16. `JobServiceContext.mVerb` — guarded by `JobSchedulerService.mLock` (4/6 writes)
 ![](findings/race/race016.svg)
-**Verdict: CONVENTION.** Write at `PackageManagerService.java:3109` is in the lock-held `setUpInstantAppInstallerActivityLP` (guard is the same object via `injector.getLock()`). The nine read sites across BroadcastController/BroadcastSkipPolicy/ComputerEngine/wm read `exported` off resolved-intent `ActivityInfo` query results, which are PMS-snapshot objects rather than the mutated installer activity. False positive.
+**Verdict: IDENTITY.** `mLock = service.getLock()` (`JobServiceContext.java:361`) is exactly the claimed guard. The flagged writes are in `closeAndCleanupJobLocked:1777` and `sendStopMessageLocked:1588` (reached only under `mLock`), the constructor write `:373` is on an unpublished object, and the binder callback enters `synchronized (mLock)` before `doCallbackLocked` (`JobServiceContext.java:1244-1248`). Every real access holds `mLock`.
 
-### 17. `ActivityInfo.flags` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 17. `PackageSetting.mimeGroups` — guarded by `PackageManagerServiceInjector.mLock` (4/6 writes)
 ![](findings/race/race017.svg)
-**Verdict: CONVENTION.** Write at `PackageManagerService.java:3107` (`|= FLAG_EXCLUDE_FROM_RECENTS…`) is inside `setUpInstantAppInstallerActivityLP` under `mPm.mLock` (== the named guard). The numerous `flags` reads (broadcast collection, ComputerEngine filtering, `ActivityRecord.isAlwaysFocusable`/`isNoHistory`) act on per-query `ActivityInfo` instances; the one self-listed read at line 3107 is the same locked method. Not a real race.
+**Verdict: BENIGN.** The flagged `copyMimeGroups` writes (`PackageSetting.java:704/708/713/715`) run from the snapshot copy-constructor (`copyPackageSetting:894`), writing the `mimeGroups` of a brand-new, not-yet-published `PackageSetting`. Live mutation (`setMimeGroup:503`) and reads (`getMimeGroups:1539`) are funneled through `commitPackageStateMutation` under the PMS write lock or served from sealed immutable snapshots.
 
-### 18. `ActivityInfo.name` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 18. `UsbPortManager.mTransactionId` — guarded by `UsbPortManager.mLock` (4/6 writes)
 ![](findings/race/race018.svg)
-**Verdict: CONVENTION.** The flagged write at `Task.java:3526` is unrelated to the named guard: `trimIneffectiveInfo` first does `info.topActivityInfo = new ActivityInfo(info.topActivityInfo)` at line 3517 ("Making a copy…") and mutates that fresh, unpublished copy. The reads are on independent query/broadcast `ActivityInfo` snapshots. False positive on a not-yet-published object.
+**Verdict: REAL.** `enableContaminantDetection` does `++mTransactionId` with no lock held (`UsbPortManager.java:365`), while `setPortRoles` and `resetUsbPort` increment the same field under `synchronized (mLock)` (`UsbPortManager.java:664/675/688`). Both are reachable from distinct binder threads — `UsbService.enableContaminantDetection:1052` and `UsbService.setPortRoles:1015` — so two binder threads race a read-modify-write, producing lost updates / duplicate transaction IDs used to correlate async HAL callbacks.
 
-### 19. `ActivityInfo.packageName` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 19. `WallpaperData.primaryColors` — guarded by `WallpaperManagerService.mLock` (4/6 writes)
 ![](findings/race/race019.svg)
-**Verdict: CONVENTION.** Same as 18: write at `Task.java:3523` mutates the freshly-cloned `info.topActivityInfo` created at `Task.java:3517`, never the shared instance, and is unrelated to `mLock`. The read sites consume `packageName` from distinct resolve/broadcast `ActivityInfo` copies. No reachable unguarded shared access.
+**Verdict: BENIGN.** Both writes (`WallpaperDataParser.java:426/442`) target a `WallpaperData` freshly allocated as a local in `loadSettingsLocked` and only installed into `mWallpaperMap` after parsing completes. While `parseWallpaperAttributes` writes `primaryColors`, the object is unpublished; live color updates on installed wallpapers occur under `mLock`.
 
-### 20. `ActivityInfo.processName` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 20. `ActivityStarter.mAddingToTask` — guarded by `ActivityTaskManagerService.mGlobalLock` (12/14 writes)
 ![](findings/race/race020.svg)
-**Verdict: CONVENTION.** Write at `Task.java:3525` again mutates the local clone from `Task.java:3517` before publication, with no relation to the PMS lock. The wm/am reads (`setDebugFlagsForStartingActivity`, `resolveToHeavyWeightSwitcherIfNeeded`, `resolveActivity`, etc.) read `processName` off separately-resolved `ActivityInfo` objects. False positive.
+**Verdict: BENIGN.** `ActivityStarter` is a per-request pooled object obtained via `obtainStarter` and recycled under `synchronized (mService.mGlobalLock)` (`ActivityStartController.java:551-564`); the flagged `reset:2680` and `set:751` writes run inside the `execute()` start flow, under `mGlobalLock`. Each starter is thread-confined to a single start; the only lock-free read is `dump:3683`. (Contrast #21-25, where the same `set`/`reset` write the *shared* `mLastStarter` after the lock is released.)
 
-### 21. `ResolveInfo.match` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 21. `ActivityStarter.mCanMoveToFrontCode` — guarded by `mGlobalLock` (7/9 writes)
 ![](findings/race/race021.svg)
-**Verdict: IDENTITY.** The flagged write at `PackageManagerService.java:3115` targets the long-lived field `mInstantAppInstallerInfo` (decl `PackageManagerService.java:855`) inside `setUpInstantAppInstallerActivityLP`, whose only caller `updateInstantAppInstallerLocked` is `@GuardedBy("mLock")` (`PackageManagerService.java:2587`); the guard `injector.mLock` is the very object PMS holds, since `mLock = injector.getLock()` (`PackageManagerService.java:1864`). The flagged reads are on unrelated `ResolveInfo` instances — e.g. the static priority comparator at `ComponentResolver.java:122-123` reads `match` off arbitrary args, not the guarded field. lockdex generalized a single instance-field guard to the public `ResolveInfo` class.
+**Verdict: REAL.** `ActivityStarter.set` (`ActivityStarter.java:760`) and `reset` (`:2689`) run via `ActivityStartController.onExecutionComplete` → `set`/`recycle`, invoked from `execute()`'s `finally` (`ActivityStarter.java:922`) which runs *after* the `synchronized(mGlobalLock)` block (`:803`,`:838`) has been released. The `set` write targets the shared singleton `mLastStarter`, so two binder threads concurrently in their lock-released `finally` race on `mLastStarter.mCanMoveToFrontCode`. Impact is confined to dump output, but the write is genuinely unguarded and concurrent.
 
-### 22. `ResolveInfo.preferredOrder` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 22. `ActivityStarter.mDoResume` — guarded by `mGlobalLock` (6/8 writes)
 ![](findings/race/race022.svg)
-**Verdict: IDENTITY.** Same site: the write at `PackageManagerService.java:3113` sets `mInstantAppInstallerInfo.preferredOrder` under the held `mLock` (caller `@GuardedBy("mLock")` at `PackageManagerService.java:2587`; lock identity established at `PackageManagerService.java:1864`). All flagged reads (`ComponentResolver.java:114-115`, `ResolveIntentHelper.chooseBestActivity:173`, `printResolveInfo`) operate on other `ResolveInfo` objects, not the guarded singleton. False positive from class-wide field generalization.
+**Verdict: REAL.** Same off-lock path: `set` (`ActivityStarter.java:743`) writes the shared `mLastStarter` in `onExecutionComplete`, and `reset` (`:2671`) runs in the lock-released `finally` at `ActivityStarter.java:922`. Concurrent activity starts on different binder threads write `mLastStarter.mDoResume` without `mGlobalLock`.
 
-### 23. `ResolveInfo.priority` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
+### 23. `ActivityStarter.mInTask` — guarded by `mGlobalLock` (4/6 writes)
 ![](findings/race/race023.svg)
-**Verdict: IDENTITY.** The write at `PackageManagerService.java:3112` is the same correctly-guarded `mInstantAppInstallerInfo` setter. The 15 flagged reads span entirely unrelated subsystems — `BroadcastRecord.getReceiverPriority:930`, `KeyboardLayoutManager.visitAllKeyboardLayouts:339`, `ComponentResolver.java:108` comparator — each reading `priority` off its own `ResolveInfo`, never the guarded field. Classic over-generalization of a per-instance guard onto a shared AOSP data class.
+**Verdict: REAL.** `set` (`ActivityStarter.java:749`) copies into the shared `mLastStarter` and `reset` (`:2677`) clears it, both via the lock-released `onExecutionComplete`/`recycle` path off `execute()`'s `finally` (`:922`). Two simultaneous starts racing on `mLastStarter.mInTask`, unguarded by the declared `mGlobalLock`.
 
-### 24. `UserInfo.userType` — guarded by `UserManagerService.mUsersLock` (4/5 writes)
+### 24. `ActivityStarter.mLaunchFlags` — guarded by `mGlobalLock` (11/13 writes)
 ![](findings/race/race024.svg)
-**Verdict: IDENTITY.** The flagged write at `UserManagerService.java:5575` (`upgradeProfileToTypeLU`) runs under its caller `upgradeUserTypesLU`, which is `@GuardedBy("mUsersLock")` (`UserManagerService.java:5505`); `mUsersLock` is a single private lock (`UserManagerService.java:403`). The flagged reads (`BroadcastQueueImpl`, `InputMethodManagerService`, `LauncherAppsService`, `UserJourneyLogger`) read `userType` off `UserInfo` objects obtained elsewhere, not the guarded `UserData.info` instances. lockdex generalized one guarded write site to the public `UserInfo.userType` field.
+**Verdict: REAL.** Identical mechanism: `set` (`ActivityStarter.java:737`) writes shared `mLastStarter`, `reset` (`:2665`) runs in the post-lock `finally` (`:922`). Concurrent binder threads racing on `mLastStarter.mLaunchFlags` without the lock.
 
-### 25. `RecognitionEvent.data` — guarded by `FakeSoundTriggerHal.mLock` (2/3 writes)
+### 25. `ActivityStarter.mTargetRootTask` — guarded by `mGlobalLock` (8/10 writes)
 ![](findings/race/race025.svg)
-**Verdict: CONVENTION.** At `ConversionUtil.java:322` the write targets `aidlEvent.data`, where `aidlEvent` is a freshly constructed `RecognitionEvent` (`ConversionUtil.java:320`) being populated before `return` — a not-yet-published local. `ConversionUtil` is a stateless static converter with no lock; the cited guard lives in the unrelated `FakeSoundTriggerHal` test double. No shared state, no race.
+**Verdict: REAL.** Same off-lock `onExecutionComplete` path: `set` (`ActivityStarter.java:756`) and `reset` (`:2684`) mutate the shared `mLastStarter` after `mGlobalLock` is dropped (`:922`). Genuine unguarded concurrent write on the singleton.
 
-### 26. `ZenModeConfig$ZenRule.pkg` — guarded by `ZenModeHelper.mConfigLock` (2/3 writes)
+### 26. `ActivityTaskSupervisor.mUserLeaving` — guarded by `mGlobalLock` (7/10 writes)
 ![](findings/race/race026.svg)
-**Verdict: IDENTITY.** The write at `ZenModeHelper.java:1163` is in `populateZenRule`, which is `@GuardedBy("mConfigLock")` (`ZenModeHelper.java:1153`); `mConfigLock` is a single private `Object` (`ZenModeHelper.java:199`). The flagged reads run under that same lock transitively — e.g. `zenRuleToAutomaticZenRule` is called from `synchronized (mConfigLock)` blocks at `ZenModeHelper.java:402/417`, and `maybePreserveRemovedRule`/`maybeRestoreRemovedRule` from blocks at `791`/`457`. Writes and reads are consistently under the same lock instance.
+**Verdict: BENIGN.** The writes at `ActivityTaskSupervisor.java:1668`/`:1727` are inside `findTaskToMoveToFront`, reached only from `moveTaskToFrontLocked` under `synchronized(mGlobalLock)` (`ActivityTaskManagerService.java:2349`) and LockTaskController Locked context; all reads (`:843`, `TaskFragment.java:1635`/`:1924`) are in `*Locked` methods. A transient flag set and cleared within one lock-held critical section.
 
-### 27. `ZenModeConfig$ZenRule.zenMode` — guarded by `ZenModeHelper.mConfigLock` (3/4 writes)
+### 27. `LaunchParamsController$LaunchParams.mPreferredTaskDisplayArea` — guarded by `mGlobalLock` (8/10 writes)
 ![](findings/race/race027.svg)
-**Verdict: IDENTITY.** The write at `ZenModeHelper.java:1254` is again inside `@GuardedBy("mConfigLock")` `populateZenRule` (`ZenModeHelper.java:1153`). The flagged readers `applyCustomPolicy` (`ZenModeHelper.java:2138`, `@GuardedBy("mConfigLock")`) and `zenRuleToAutomaticZenRule` (called under the lock at `402/417`) all access `zenMode` while holding the single `mConfigLock` (`ZenModeHelper.java:199`). No unguarded access.
+**Verdict: BENIGN.** `LaunchParams` is a plain data holder; the `reset`/`set` writes (`LaunchParamsController.java:219`/`:230`) act on thread-confined instances — the controller's scratch fields `mTmpParams`/`mTmpCurrent`/`mTmpResult` used only inside `calculate()` under `mGlobalLock`, or the starter's own confined `mLaunchParams`. Reads in `getOrCreateRootTask` consume a lock-confined params object in the same start.
 
-### 28. `WindowRelayoutResult.syncSeqId` — guarded by `ActivityTaskManagerService.mGlobalLock` (3/4 writes)
+### 28. `LaunchParamsController$LaunchParams.mWindowingMode` — guarded by `mGlobalLock` (13/15 writes)
 ![](findings/race/race028.svg)
-**Verdict: IDENTITY.** Both the write (`WindowManagerService.java:2086`) and the read (`WindowManagerService.java:2089`) sit inside `addWindowInner`, reached only from `addWindow` under `synchronized (mGlobalLock)` at `WindowManagerService.java:1645`. WMS `mGlobalLock = atm.getGlobalLock()` (`WindowManagerService.java:1315`) is the same object as the ATMS-named guard, so write and read share one lock instance — no race.
+**Verdict: BENIGN.** Same as #27: `reset`/`set` (`LaunchParamsController.java:221`/`:232`) mutate thread-confined scratch/per-Task `LaunchParams`, and `getOrCreateRootTask` reads (`RootWindowContainer.java:3215`, `TaskDisplayArea.java:867`) operate on a lock-confined instance computed in the same `mGlobalLock`-held activity-start flow.
 
-### 29. `ProcessStats.mFlags` — guarded by `ProcessStatsService.mLock` (3/4 writes)
+### 29. `Task.mReuseTask` — guarded by `mGlobalLock` (6/9 writes)
 ![](findings/race/race029.svg)
-**Verdict: CONVENTION.** The single flagged "violation" at `ProcessStatsService.java:292` is the `mProcessStats.mFlags |= FLAG_COMPLETE` read-modify-write, sitting inside `writeStateLocked`, which is `@GuardedBy("mLock")` (`ProcessStatsService.java:282`); `mLock` is one private `Object` (`ProcessStatsService.java:84`). lockdex merely re-reported the guarded `|=` line as both a read and a write; the access is correctly synchronized.
+**Verdict: BENIGN.** A transient flag set true and cleared false within `performClearTaskForReuse` (`Task.java:1743`/`:1749`) and `performClearTop`, all under `mGlobalLock`. The real reads (`removeChild` `:1650`, `isClearingToReuseTask` `:1980`) are in lock-held Task operations; the only unguarded reads are the lock-free `dump` (`:3825`/`:3829`).
 
-### 30. `ProcessStats.mTimePeriodEndRealtime` — guarded by `ProcessStatsService.mLock` (3/4 writes)
+### 30. `AccessibilityServiceInfo.crashed` — guarded by `AbstractAccessibilityServiceConnection.mLock` (2/3 writes)
 ![](findings/race/race030.svg)
-**Verdict: CONVENTION.** The write at `ProcessStatsService.java:289` is in `@GuardedBy("mLock")` `writeStateLocked`. Both flagged reads are on detached `ProcessStats` snapshots, not the guarded `mProcessStats`: `ProcessStatsService.java:712` reads a `stats` parameter inside a spawned dump `Thread.run()`, and `ProcessStatsService.java:749` reads a `stats` freshly deserialized from a Parcel (`746`) — itself still under `synchronized (mLock)` (`731`). No shared-instance race.
+**Verdict: IDENTITY.** `AbstractAccessibilityServiceConnection.mLock` is the injected `AccessibilityManagerService.mLock` (passed at `AccessibilityManagerService.java:3114`, assigned at `AbstractAccessibilityServiceConnection.java:368`), the same lock object. The write at `AccessibilityManagerService.java:2708` is in `readInstalledAccessibilityServiceLocked`, reached only from `readConfigurationForUserStateLocked` which holds that `mLock`; the object is also a freshly-parsed, not-yet-published `AccessibilityServiceInfo`.
 
-### 31. `ProcessStats.mTimePeriodEndUptime` — guarded by `ProcessStatsService.mLock` (3/4 writes)
+### 31. `ProfilerInfo.profileFd` — guarded by `AppProfiler.mProfilerLock` (4/5 writes)
 ![](findings/race/race031.svg)
-**Verdict: CONVENTION.** The field lives on the `mProcessStats` member but is protected by the owning service's `mLock`. The flagged write at `ProcessStatsService.java:290` is inside `writeStateLocked(boolean,boolean)`, which is `@GuardedBy("mLock")` and is only ever reached from `synchronized (mLock)` blocks (e.g. `ProcessStatsService.java:262-263`, `:137`, `:1089`). Caller-holds-lock `*Locked` convention; not a real race.
+**Verdict: BENIGN.** lockdex conflated two distinct `android.app.ProfilerInfo` instances because `profileFd` is keyed by declaring type: the flagged write at `WindowProcessController.java:1522` mutates `mAtm.mProfilerInfo` (under `mGlobalLock`), whereas the dump reads at `AppProfiler.java:2534/2544/2644` read `mProfileData.getProfilerInfo().profileFd` — a *separate* AppProfiler-owned instance, under `@GuardedBy("mService")`. The two objects are never the same reference, so there is no shared field.
 
-### 32. `AnyMotionDetector.mCurrentGravityVector` — guarded by `AnyMotionDetector.mLock` (2/3 writes)
+### 32. `WaitResult.who` — guarded by `ActivityTaskManagerService.mGlobalLock` (2/3 writes)
 ![](findings/race/race032.svg)
-**Verdict: CONVENTION.** The write at `AnyMotionDetector.java:236` is in `stopOrientationMeasurementLocked`, and the reads at `:283/:287/:301` are in `getStationaryStatusLocked`; both are `*Locked` helpers. Every call site holds `mLock`: `stopOrientationMeasurementLocked` is invoked only from `synchronized (mLock)` blocks (`AnyMotionDetector.java:322`, `:359`), and `getStationaryStatusLocked` is called only from within `stopOrientationMeasurementLocked` (`:249`). Lock is held transitively.
+**Verdict: BENIGN.** The flagged write at `ActivityTaskSupervisor.java:680` runs inside `reportActivityLaunched` under `mGlobalLock`, then `notifyAll()`s waiters blocked in `waitActivityVisibleOrLaunched` on `mGlobalLock.wait()`; the shell-thread read at `ActivityManagerShellCommand.java:960-961` only sees `result` after `startActivityAndWait` returns, so the write happens-before the read through the `mGlobalLock` monitor. Publication is monitor-safe.
 
-### 33. `AnyMotionDetector.mPreviousGravityVector` — guarded by `AnyMotionDetector.mLock` (2/3 writes)
+### 33. `SyncStatusInfo$Stats.numCancels` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race033.svg)
-**Verdict: CONVENTION.** Identical pattern to the sibling field: the write at `AnyMotionDetector.java:235` and reads at `:283/:301` sit in `stopOrientationMeasurementLocked` / `getStationaryStatusLocked`. Both are reached exclusively under `synchronized (mLock)` (call sites at `AnyMotionDetector.java:322`, `:359`, and the nested call at `:249`). Caller-holds-lock convention.
+**Verdict: BENIGN.** The flagged write at `SyncStorageEngine.java:2303` is in `readSyncStatusStatsLocked`, reached via `readStatusLocked` whose call sites hold `synchronized(mAuthorities)`, and it populates a not-yet-published fresh `SyncStatusInfo`. The dump read in `SyncManager.dumpSyncState` (`:2539`) operates on a deep copy returned by `getCopyOfAuthorityWithSyncStatus` (copy made under the lock), never the live object.
 
-### 34. `AnyMotionDetector.mState` — guarded by `AnyMotionDetector.mLock` (2/3 writes)
+### 34. `SyncStatusInfo$Stats.numFailures` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race034.svg)
-**Verdict: CONVENTION.** The write at `AnyMotionDetector.java:261` is in `stopOrientationMeasurementLocked`, which is only ever called from inside `synchronized (mLock)` blocks (`AnyMotionDetector.java:322`, `:359`). The method is a standard `*Locked` helper; the lock is held by the caller.
+**Verdict: BENIGN.** Identical pattern: write at `SyncStorageEngine.java:2299` under `synchronized(mAuthorities)` targets a fresh, unpublished `SyncStatusInfo`. The `SyncManager.dumpSyncState` read (`:2538`) reads `stats` off a private deep copy taken under the lock (`:1448`).
 
-### 35. `AnyMotionDetector.mWakelockTimeoutIsActive` — guarded by `AnyMotionDetector.mLock` (2/3 writes)
+### 35. `SyncStatusInfo$Stats.numSourceFeed` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race035.svg)
-**Verdict: CONVENTION.** The write at `AnyMotionDetector.java:255` is inside `stopOrientationMeasurementLocked`, invoked only from `synchronized (mLock)` blocks (`AnyMotionDetector.java:322`, `:359`). Same caller-holds-lock `*Locked` convention as the other AnyMotionDetector fields.
+**Verdict: BENIGN.** Write at `SyncStorageEngine.java:2326` runs under `synchronized(mAuthorities)` into a freshly-constructed `SyncStatusInfo`. The dump read at `SyncManager.java:2534` reads a deep copy from `getCopyOfAuthorityWithSyncStatus`; writer and reader never share an object.
 
-### 36. `DeviceIdleController.mForceIdle` — guarded by `DeviceIdleController` (5/6 writes)
+### 36. `SyncStatusInfo$Stats.numSourceLocal` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race036.svg)
-**Verdict: CONVENTION.** The guard is the controller instance (`this`). The flagged write at `DeviceIdleController.java:3755` is in `exitForceIdleLocked`, which is explicitly `@GuardedBy("this")` (`:3752`). The read sites are likewise `*Locked` methods (`updateChargingLocked`, `stepIdleStateLocked`, etc.), all of which run under `synchronized (this)`. Caller-holds-lock; not a real race.
+**Verdict: BENIGN.** Deserialization write at `SyncStorageEngine.java:2310` is lock-held and on an unpublished object; the dump read at `:2531` operates on a copy produced under the lock by `getCopyOfAuthorityWithSyncStatus` (`:1448`).
 
-### 37. `DeviceIdleController.mPowerSaveWhitelistExceptIdleAppIdArray` — guarded by `DeviceIdleController` (2/3 writes)
+### 37. `SyncStatusInfo$Stats.numSourceOther` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race037.svg)
-**Verdict: CONVENTION.** The write at `DeviceIdleController.java:4432` is in `updateWhitelistAppIdsLocked`; although the method lacks the `@GuardedBy` annotation, every one of its call sites holds `synchronized (this)` (`DeviceIdleController.java:2690`, `:2960`, `:2971`, `:2991`, `:3003`, `:3016`). The reads sit in `passWhiteListsToForceAppStandbyTrackerLocked` and the same method, both under the instance lock. Caller-holds-lock convention.
+**Verdict: BENIGN.** Write at `SyncStorageEngine.java:2306` is inside `readSyncStatusStatsLocked` under `synchronized(mAuthorities)` on a fresh `SyncStatusInfo`; the dump read at `SyncManager.java:2536` reads a deep copy snapshotted under the lock.
 
-### 38. `Watchdog$HandlerChecker.mCurrentMonitor` — guarded by `Watchdog$HandlerChecker.mLock` (2/3 writes)
+### 38. `SyncStatusInfo$Stats.numSourcePeriodic` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race038.svg)
-**Verdict: IDENTITY.** `HandlerChecker.mLock` (field at `Watchdog.java:275`) is assigned from the constructor's `lock` parameter (`:280`), and every `HandlerChecker` is constructed with the outer `Watchdog.mLock` (`Watchdog.java:505-538`) — the same monitor object. The flagged write at `:328` (`scheduleCheckLocked`) executes under `synchronized (mLock)` at `:881`, and the reads at `:362/:365` run under the lock via `describeCheckersLocked` (`:804`); the `run()` writes at `:381/:388` take `mLock` directly. Same lock, different field name.
+**Verdict: BENIGN.** Lock-held deserialization write at `SyncStorageEngine.java:2322` into an unpublished object; dump read at `SyncManager.java:2533` against a private copy from `getCopyOfAuthorityWithSyncStatus`.
 
-### 39. `MagnificationConnectionManager.mConnectionWrapper` — guarded by `MagnificationController.mLock` (3/4 writes)
+### 39. `SyncStatusInfo$Stats.numSourcePoll` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race039.svg)
-**Verdict: IDENTITY.** `MagnificationController` passes its own `mLock` into the `MagnificationConnectionManager` constructor (`MagnificationController.java:1189-1191`), so `MagnificationConnectionManager.mLock` and `MagnificationController.mLock` are the same object. The flagged write at `MagnificationConnectionManager.java:268` is inside `synchronized (mLock)` (`:239`), and all six read sites are `@GuardedBy("mLock")` `*Internal` methods (`:1325`, `:1342`, `:1348`, `:1359`, `:1365`). Correctly guarded; the report only differs in which class's field names the shared monitor.
+**Verdict: BENIGN.** Write at `SyncStorageEngine.java:2314` runs under `synchronized(mAuthorities)` on a fresh `SyncStatusInfo`; dump read at `SyncManager.java:2532` reads a deep copy taken under the lock.
 
-### 40. `AppProfiler.mMemWatchDumpPid` — guarded by `AppProfiler.mProfilerLock` (2/3 writes)
+### 40. `SyncStatusInfo$Stats.numSourceUser` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race040.svg)
-**Verdict: CONVENTION.** The write at `AppProfiler.java:1054` is in `startHeapDumpLPf`, which is `@GuardedBy("mProfilerLock")` (`:1049`) and is called only from other `*LPf` methods that themselves hold the lock (`recordPssSampleLPf` at `:937`, annotated `@GuardedBy("mProfilerLock")` at `:897`; and `:1000`). The reads at `:2522/:2626` are likewise `*LPf` methods. Caller-holds-lock convention.
+**Verdict: BENIGN.** Lock-held write at `SyncStorageEngine.java:2318` into a not-yet-published `SyncStatusInfo`, dump read at `:2535` on the deep copy from `getCopyOfAuthorityWithSyncStatus`. No cross-thread access to a shared field.
 
-### 41. `AppProfiler.mMemWatchDumpProcName` — guarded by `mProfilerLock` (2/3 writes)
+### 41. `SyncStatusInfo$Stats.numSyncs` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race041.svg)
-**Verdict: CONVENTION.** The flagged write is in `startHeapDumpLPf`, annotated `@GuardedBy("mProfilerLock")` (`AppProfiler.java:1049`), and all flagged reads are in `*LPf` methods carrying the same annotation (`recordPssSampleLPf:933`, `recordRssSampleLPf:996`, `dumpMemWatchProcessesLPf:2495`, `writeMemWatchProcessToProtoLPf`). The `LPf` suffix is this file's caller-holds-`mProfilerLock` convention; the analyzer treated the annotated method bodies as unguarded.
+**Verdict: BENIGN.** The write at `SyncStorageEngine.java:2296` populates a freshly-deserialized `SyncStatusInfo` during file parse, under `synchronized(mAuthorities)` (or in `init()` before publication). The dump read at `SyncManager.java:2536` operates on a deep copy (`new SyncStatusInfo(...)`, `:1534`); `writeStatusStatsLocked` is a serializer, not a concurrent reader.
 
-### 42. `AppProfiler.mMemWatchDumpUid` — guarded by `mProfilerLock` (2/3 writes)
+### 42. `SyncStatusInfo$Stats.totalElapsedTime` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
 ![](findings/race/race042.svg)
-**Verdict: CONVENTION.** Same pattern as #41: write at `AppProfiler.java:1055` in `startHeapDumpLPf` and reads at `dumpMemWatchProcessesLPf:2523` and `writeMemWatchProcessToProtoLPf:2628` are all in `@GuardedBy("mProfilerLock")` `*LPf` methods. Lock is held by every caller per convention.
+**Verdict: BENIGN.** Identical to 41: the write at `SyncStorageEngine.java:2292` fills a fresh, unpublished `Stats` during locked file deserialization; the dump consumer at `SyncManager.java:2539` reads a private deep copy.
 
-### 43. `AppProfiler.mMemWatchDumpUri` — guarded by `mProfilerLock` (2/3 writes)
+### 43. `ActivityInfo.name` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
 ![](findings/race/race043.svg)
-**Verdict: CONVENTION.** Write at `AppProfiler.java:1053` plus the self-read at `1064` are both inside `startHeapDumpLPf`, `@GuardedBy("mProfilerLock")`; the other reads (`dumpMemWatchProcessesLPf:2521`, `writeMemWatchProcessToProtoLPf:2624`) are likewise in annotated `*LPf` methods. All accesses are under the profiler lock by the file's locking convention.
+**Verdict: BENIGN.** `Task.trimIneffectiveInfo` explicitly clones the object (`new ActivityInfo(info.topActivityInfo)`, `Task.java:3517`) before blanking `name` at `:3526`; the write targets a private, unpublished copy. Cross-subsystem reads operate on different ActivityInfo instances from PMS.
 
-### 44. `BoundServiceSession.mTotal` — guarded by `BoundServiceSession` (2/3 writes)
+### 44. `ActivityInfo.packageName` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
 ![](findings/race/race044.svg)
-**Verdict: CONVENTION.** The flagged write and read are in `handleInvalidToken` (`BoundServiceSession.java:120`) and the read in `maybePostProcessStateUpdate` (`BoundServiceSession.java:102`), both annotated `@GuardedBy("this")`; their callers acquire `synchronized (this)`. The instance monitor is the declared guard, so these accesses are correctly protected.
+**Verdict: BENIGN.** Same fresh-copy at `Task.java:3517`; the `packageName = ""` write at `:3523` mutates the just-cloned ActivityInfo, not shared PMS state. The stripped object is the one returned to the caller, distinct from any concurrently-read instance.
 
-### 45. `UidObserverController$ChangeRecord.isPending` — guarded by `UidObserverController.mLock` (3/4 writes)
+### 45. `ActivityInfo.processName` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
 ![](findings/race/race045.svg)
-**Verdict: CONVENTION.** `copyTo` (`UidObserverController.java:518`) is unannotated, but its sole caller, `dispatchUidsChanged`, invokes it at line 272 inside `synchronized (mLock)` (acquired at line 264). The read of `this.isPending` and write of `changeRecord.isPending` both occur under `mLock`; the analyzer failed to propagate the caller's lock across the cross-object field copy.
+**Verdict: BENIGN.** The `processName = ""` write at `Task.java:3525` follows the same `new ActivityInfo(...)` clone at `:3517`. Write target is unpublished; WM/AM readers read independently-resolved ActivityInfo objects.
 
-### 46. `AttentionManagerService.mCurrentProximityUpdate` — guarded by `mLock` (3/4 writes)
+### 46. `PermissionInfo.protectionLevel` — guarded by `PackageManagerServiceInjector.mLock` (2/3 writes)
 ![](findings/race/race046.svg)
-**Verdict: CONVENTION.** The write at `AttentionManagerService.java:806` and all flagged reads (796, 799, 805) are inside `handlePendingCallbackLocked`, which is annotated `@GuardedBy("mLock")` (`AttentionManagerService.java:782`) and called only from a `synchronized (mLock)` site (line 777). Lock is held by the caller per the `Locked` convention.
+**Verdict: BENIGN.** At `PermissionService.kt:403`, `protectionLevel` is normalized on the incoming Binder argument `permissionInfo` — a per-call, parcel-deserialized object owned by the calling thread, not yet published into the registry. Registry readers read distinct `Permission`/`PermissionInfo` instances.
 
-### 47. `AudioService.mVibrateSetting` — guarded by `mSettingsLock` (2/3 writes)
+### 47. `ResolveInfo.activityInfo` — guarded by `PackageManagerServiceInjector.mLock` (3/4 writes)
 ![](findings/race/race047.svg)
-**Verdict: REAL.** The two guarded writes live inside `synchronized (mSettingsLock)` (`AudioService.java:3411`, `3415`), but the flagged write in `setVibrateSetting` (`AudioService.java:6898`) and the read in `getVibrateSetting` (`AudioService.java:6890`) hold no lock and carry no `@GuardedBy` annotation — they are plain public-method field accesses. This is a genuine unsynchronized read-modify-write race against the lock-protected init path, albeit on an explicitly deprecated API.
+**Verdict: BENIGN.** `BroadcastRecord.applySingletonPolicy` reassigns `info.activityInfo` (`BroadcastRecord.java:1160`) on a `ResolveInfo` that lives in a single BroadcastRecord's `receivers` list, with `getActivityInfoForUser` returning a freshly-allocated `new ActivityInfo(aInfo)`. The call runs under the AMS lock at enqueue; receiver ResolveInfo objects are freshly allocated per query. Other subsystems read their own per-query instances.
 
-### 48. `BtHelper.mLeAudioCallback` — guarded by `BtHelper` (2/3 writes)
+### 48. `UserInfo.partial` — guarded by `UserManagerService.mUsersLock` (3/4 writes)
 ![](findings/race/race048.svg)
-**Verdict: IDENTITY.** The field is declared `@GuardedBy("BtHelper.this")` (`BtHelper.java:660`), and the flagged write at line 705 is inside `onBtProfileConnected`, a `synchronized` instance method (`BtHelper.java:664`) that holds exactly that monitor. The analyzer surfaced the lock as the implicit instance monitor rather than matching the named `BtHelper.this` guard; the access is correctly protected.
+**Verdict: REAL.** The write `userData.info.partial = true` at `UserManagerService.java:7186` executes after `synchronized(mUsersLock)` has already closed (line 7182), holding only `mPackagesLock`. `getUserInfo` hands the *live* `UserData.info` to callers (`userWithName` returns `orig` unchanged when name is set, `:2662`), so `TrustManagerService.refreshAgentList` (`TrustManagerService.java:809`) and `refreshDeviceLockedForUser` (`:1042`) read `userInfo.partial` on that same object on the TrustManager thread with no `mUsersLock` held.
 
-### 49. `FadeConfigurations.mActiveFadeManagerConfig` — guarded by `mLock` (4/5 writes)
+### 49. `RecognitionEvent.data` — guarded by `FakeSoundTriggerHal.mLock` (2/3 writes)
 ![](findings/race/race049.svg)
-**Verdict: CONVENTION.** The write at `FadeConfigurations.java:526` and reads at 525/528 are all within `getUpdatedFadeManagerConfigLocked`, annotated `@GuardedBy("mLock")` (`FadeConfigurations.java:523`), whose callers (`isAudioAttributesUnfadeableLocked`, `isUidUnfadeableLocked`) are themselves `*Locked` and hold `mLock`. Standard caller-holds-lock convention.
+**Verdict: BENIGN.** `ConversionUtil.hidl2aidlRecognitionEvent` assigns `aidlEvent.data` (`ConversionUtil.java:322`) on a `RecognitionEvent` it just constructed and has not yet returned. A stateless static HIDL→AIDL converter building a fresh local; the credited `FakeSoundTriggerHal.mLock` is incidental.
 
-### 50. `MediaFocusControl.mFocusFreezeExemptUids` — guarded by `mAudioFocusLock` (2/3 writes)
+### 50. `NetworkPolicy.limitBytes` — guarded by `NetworkPolicyManagerService.mNetworkPoliciesSecondLock` (5/6 writes)
 ![](findings/race/race050.svg)
-**Verdict: CONVENTION.** The flagged write at `MediaFocusControl.java:1482` sits in the `catch` block of `enterAudioFocusFreezeForTest`, which is still inside the `synchronized (mAudioFocusLock)` opened at line 1462; the read in `isFocusFrozenForTestForUid` is `@GuardedBy("mAudioFocusLock")` (`MediaFocusControl.java:1444`). Both accesses hold the lock — the analyzer mis-scoped the in-catch write as escaping the synchronized region.
+**Verdict: REAL.** `factoryReset` (binder thread, no lock held in its loop) mutates `policy.limitBytes = LIMIT_DISABLED` at `NetworkPolicyManagerService.java:6460` on the *live* policy objects — `getNetworkPolicies` returns `mNetworkPolicy.valueAt(i)` without copying (`:3324`). Meanwhile `updateNetworkRulesNL` (`:2390`), `updateNetworkEnabledNL` (`:2203`), and `updateNotificationsNL` (`:1711`) read `policy.limitBytes` on those same objects under `mNetworkPoliciesSecondLock` on the handler thread — the unguarded factory-reset write races the lock-held readers before the later `setNetworkPolicies` re-lock.
 
-### 51. `MediaFocusControl.mFocusFreezerForTest` — guarded by `mAudioFocusLock` (2/3 writes)
+### 51. `WindowManager$LayoutParams.flags` — guarded by `ActivityTaskManagerService.mGlobalLock` (6/7 writes)
 ![](findings/race/race051.svg)
-**Verdict: CONVENTION.** The flagged write at `MediaFocusControl.java:1481` (`mFocusFreezerForTest = null` in the `RemoteException` catch) sits inside the `synchronized (mAudioFocusLock)` block opened at line 1462, so it is in fact lock-held; the analyzer missed that the catch is still within the synchronized scope. The read at `MediaFocusControl.java:1434` is in `isFocusFrozenForTest()`, annotated `@GuardedBy("mAudioFocusLock")` and only called from lock-held paths. No real race.
+**Verdict: BENIGN.** `flags` is a public, per-instance field on the app-side parcelable `WindowManager.LayoutParams`, not a `system_server` singleton; the correlation to `mGlobalLock` is spurious aggregation across unrelated `LayoutParams`. The flagged write at `SideFpsToast.onStart:55` mutates that dialog's own freshly-fetched window attributes on the UI thread before `setAttributes`, while the WM-internal reads operate on different `WindowState.mAttrs` instances.
 
-### 52. `SoundDoseHelper.mMusicActiveMs` — guarded by `mSafeMediaVolumeStateLock` (3/4 writes)
+### 52. `DeviceIdleController.mActiveIdleOpCount` — guarded by `DeviceIdleController` (4/5 writes)
 ![](findings/race/race052.svg)
-**Verdict: CONVENTION.** The write at `SoundDoseHelper.java:1112` is in `setSafeMediaVolumeEnabled`, declared `@GuardedBy("mSafeMediaVolumeStateLock")`, and its callers hold the lock; the reads at lines 1130 (`saveMusicActiveMs`) and 1036 (`updateSafeMediaVolume_l`) are likewise `@GuardedBy` lock-held methods. The only genuinely unlocked access is the read in `dump()` at `SoundDoseHelper.java:858`, which is the standard lock-free dump convention, not a meaningful data race.
+**Verdict: BENIGN.** The write at `DeviceIdleController.java:4039` is in `stepIdleStateLocked`, a `@GuardedBy("this")` method, and the only flagged reads are in `dump` at lines 5438-5439, inside the `synchronized (this)` block opened at `:5276`. Same `this` monitor guards both writes and reads.
 
-### 53. `SpatializerHelper.mDynSensorCallback` — guarded by `SpatializerHelper` (2/3 writes)
+### 53. `DeviceIdleController.mCurLightIdleBudget` — guarded by `DeviceIdleController` (5/6 writes)
 ![](findings/race/race053.svg)
-**Verdict: CONVENTION.** The flagged write at `SpatializerHelper.java:1542` is inside `onInitSensors()`, which is declared `synchronized` at line 1519 and thus holds the instance monitor that is the guard. The analyzer appears not to have credited the method-level `synchronized` modifier. Not a race.
+**Verdict: BENIGN.** Written at `DeviceIdleController.java:3748` in `resetLightIdleManagementLocked` (`@GuardedBy("this")`), and the dump reads at 5472/5474 are inside the `synchronized (this)` block at `:5276`.
 
-### 54. `SpatializerHelper.mSensorManager` — guarded by `SpatializerHelper` (2/3 writes)
+### 54. `DeviceIdleController.mNextLightIdleDelay` — guarded by `DeviceIdleController` (3/4 writes)
 ![](findings/race/race054.svg)
-**Verdict: CONVENTION.** The write at `SpatializerHelper.java:1541` is within the `synchronized` `onInitSensors()` (line 1519). The reads at lines 1691 (`getHeadSensorHandleUpdateTracker`) and 1758 (`getScreenSensorHandle`) are private helpers invoked only from `onInitSensors` (lines 1551/1553) under that same monitor. All accesses are lock-held.
+**Verdict: BENIGN.** Written at `DeviceIdleController.java:3745` under `@GuardedBy("this")`; dump reads at 5456/5458 are within the `synchronized (this)` region beginning at `:5276`.
 
-### 55. `SpatializerHelper.mState` — guarded by `SpatializerHelper` (15/16 writes)
+### 55. `DeviceIdleController.mNextLightIdleDelayFlex` — guarded by `DeviceIdleController` (3/4 writes)
 ![](findings/race/race055.svg)
-**Verdict: CONVENTION.** The write at `SpatializerHelper.java:1058` is in private `createSpat()`, whose only caller `setSpatializerEnabledInt` is `synchronized` (line 871 call site), so the instance monitor is held transitively. The reads at 1315/1325 are in `checkSpatializer`, called only from `synchronized` methods (`setDisplayOrientation`/`setFoldState`, lines 1191/1202); the read at 1629 is the lock-free `dump()`. No real race.
+**Verdict: BENIGN.** Written at `DeviceIdleController.java:3747` under `@GuardedBy("this")`; the dump read at 5461 is inside the same `synchronized (this)` block at `:5276`.
 
-### 56. `AutofillInlineSuggestionsRequestSession.mImeSessionInvalidated` — guarded by `AutofillInlineSessionController.mLock` (2/3 writes)
+### 56. `StorageManagerService.mPrimaryStorageUuid` — guarded by `StorageManagerService.mLock` (4/5 writes)
 ![](findings/race/race056.svg)
-**Verdict: CONVENTION.** Both the write in `onCreateInlineSuggestionsRequestLocked` (`AutofillInlineSuggestionsRequestSession.java:199`) and the read in `onInlineSuggestionsResponseLocked` (line 165) are `@GuardedBy("mLock")` `*Locked`-suffixed methods whose callers hold the session controller's `mLock`. The field lives on the session object but is consistently accessed under the controller lock by contract. Not a race.
+**Verdict: BENIGN.** The write at `StorageManagerService.java:1929` is in `onMoveStatusLocked` (mLock-held callers), and `writeSettingsLocked`'s read at 2299 is always called under mLock. The only lock-free access is the read at `:3113` in `setPrimaryStorageUuid` after the `synchronized (mLock)` block closes, but it is an atomic reference read serialized by the `mMoveCallback` in-progress invariant; a stale reference there is harmless.
 
-### 57. `AutofillManagerServiceImpl.mRemoteAugmentedAutofillService` — guarded by `AbstractPerUserSystemService.mLock` (2/3 writes)
+### 57. `Watchdog$HandlerChecker.mCurrentMonitor` — guarded by `Watchdog$HandlerChecker.mLock` (2/3 writes)
 ![](findings/race/race057.svg)
-**Verdict: CONVENTION.** The write at `AutofillManagerServiceImpl.java:1734` is in `getRemoteAugmentedAutofillServiceLocked`, annotated `@GuardedBy("mLock")`; the guard is the inherited `mLock` field on the superclass `AbstractPerUserSystemService`. Every flagged reader (`dumpLocked` at 1489/1491 and the `*Locked` getters) is also `@GuardedBy("mLock")`, so all accesses share the one inherited lock. Not a race.
+**Verdict: IDENTITY.** `mLock` is the single shared `Watchdog.mLock` (`Watchdog.java:211`) injected into every `HandlerChecker` (constructed at 505-535). The `run()` write at 381/388 takes `synchronized (mLock)`, while the flagged write at `:328` (`scheduleCheckLocked`) and reads at 362/365 follow caller-holds-lock — their callers run inside `synchronized (mLock)` (`:881`, `:925`/`:934`). Same lock object via an injected field.
 
-### 58. `AutofillManagerServiceImpl.mRemoteFieldClassificationService` — guarded by `AbstractPerUserSystemService.mLock` (2/3 writes)
+### 58. `AccessibilityWindowManager.mActiveWindowId` — guarded by `AccessibilityWindowManager.mLock` (3/4 writes)
 ![](findings/race/race058.svg)
-**Verdict: CONVENTION.** Identical pattern to #57: the write at `AutofillManagerServiceImpl.java:2132` is in `getRemoteFieldClassificationServiceLocked`, `@GuardedBy("mLock")`, against the inherited `AbstractPerUserSystemService.mLock`; the readers (`dumpLocked` at 1505/1507 and the `*Locked` getters) are all `@GuardedBy("mLock")`. Consistent single-lock discipline, no race.
+**Verdict: REAL.** Every other writer of this plain `int` (`AccessibilityWindowManager.java:106`) takes `mLock` via `*Locked` paths driven by window-change callbacks (768, 815, 851, 868, 1777), but `getActiveWindowId` does an unsynchronized read-check-then-write at lines 1758/1760/1762. It is invoked off the input/touch-explorer thread without the lock through `EventDispatcher.populateAccessibilityEvent` (`EventDispatcher.java:204`), racing the locked window-update writes on the a11y handler thread — a torn read and a lost update on `mActiveWindowId`.
 
-### 59. `BackupAgentConnectionManager.mCurrentConnection` — guarded by `mAgentConnectLock` (5/6 writes)
+### 59. `MagnificationConnectionManager$WindowMagnifier.mTrackingTypingFocusStartTime` — guarded by `MagnificationController.mLock` (2/3 writes)
 ![](findings/race/race059.svg)
-**Verdict: CONVENTION.** The flagged write at `BackupAgentConnectionManager.java:167` (`mCurrentConnection = null` in the `InterruptedException` catch) is inside the `synchronized (mAgentConnectLock)` block opened at line 134 in `bindToAgentSynchronous`; the analyzer missed the enclosing scope. The read at line 240 in `shouldKillAppOnUnbind` is `@GuardedBy("mAgentConnectLock")` and is called at line 209 from within the synchronized block at 202. Lock-held throughout.
+**Verdict: BENIGN.** The field is declared `volatile long` (`MagnificationConnectionManager.java:1116`), and the companion accumulator uses an `AtomicLongFieldUpdater` (line 1264) — the access at `pauseTrackingTypingFocusRecord` (1261/1262/1265) is deliberately lock-free. Atomic volatile long; the mLock correlation is incidental.
 
-### 60. `VirtualCameraController.mVirtualCameraService` — guarded by `mServiceLock` (2/3 writes)
+### 60. `MagnificationConnectionManager.mConnectionWrapper` — guarded by `MagnificationController.mLock` (3/4 writes)
 ![](findings/race/race060.svg)
-**Verdict: CONVENTION.** The write at `VirtualCameraController.java:258` is in private `connectVirtualCameraService()`, which acquires no lock itself but is invoked only from `connectVirtualCameraServiceIfNeeded` at line 238, inside its `synchronized (mServiceLock)` block (line 235) — the sole caller. The field is thus written under `mServiceLock`, matching its guarded reads. Not a race.
+**Verdict: IDENTITY.** `mLock` (`MagnificationConnectionManager.java:136`) is the injected shared `MagnificationController.mLock` (constructor param at 219, assigned 222). The flagged write at `:268` (and 247/257) lives inside the `synchronized (mLock)` block opened at line 239, the same lock all 17 reads use. Flagged only because the guard is `synchronized(mLock)` on an injected field rather than `this`.
 
-### 61. `DefaultNetworkMetrics.mLastValidationTimeMs` — guarded by `DefaultNetworkMetrics` (2/3 writes)
+### 61. `ActivityManagerService.mDebugApp` — guarded by `ActivityManagerService` (2/3 writes)
 ![](findings/race/race061.svg)
-**Verdict: CONVENTION.** The unguarded write at `DefaultNetworkMetrics.java:170` is in the private `newDefaultNetwork`, reachable only from the `synchronized` `logDefaultNetworkEvent` (line 126); the read at line 119 (`updateValidationTime`) is likewise only called from `synchronized` methods (lines 108, 138). Every entry point into this class is `synchronized` on `this`, so the lock is always held transitively. Not a real race.
+**Verdict: BENIGN.** The `setDebugApp` write (`ActivityManagerService.java:7620`) and the orig-read (`:7618`) both sit inside `synchronized (this)` at `:7616`, and the dump reads at `:11431`/`:11439` are inside `dumpOtherProcessesInfoLSP`, `@GuardedBy({"this","mProcLock"})`. Every flagged access holds the guard.
 
-### 62. `SyncStorageEngine$AuthorityInfo.syncable` — guarded by `SyncStorageEngine.mAuthorities` (2/3 writes)
+### 62. `ActivityManagerService.mWaitForDebugger` — guarded by `ActivityManagerService` (2/3 writes)
 ![](findings/race/race062.svg)
-**Verdict: CONVENTION.** The write in `defaultInitialisation` (`SyncStorageEngine.java:334`) runs only from the `AuthorityInfo` constructor, invoked by `createAuthorityLocked`/`getOrCreateAuthorityLocked`, which are always called inside `synchronized (mAuthorities)` (e.g. line 1449). `writeAccountInfoLocked` (line 2049) is a `*Locked` reader; `SyncManager.dumpSyncState` (line 2524) reads a defensive copy from `getCopyOfAuthorityWithSyncStatus` (line 1453), and `toString`/`toSafeString` are debug stringifiers. No genuine race.
+**Verdict: BENIGN.** Both the write (`ActivityManagerService.java:7622`) and the orig-read (`:7619`) are inside the same `synchronized (this)` block at `:7616`. No reachable concurrent access escapes the guard.
 
-### 63. `ActiveAdmin.globalProxyExclusionList` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (2/3 writes)
+### 63. `ActivityManagerShellCommand$MyActivityController.mState` — guarded by `ActivityManagerShellCommand$MyActivityController` (2/3 writes)
 ![](findings/race/race063.svg)
-**Verdict: CONVENTION.** `ActiveAdmin.readFromXml` (`ActiveAdmin.java:823`) is reached only via `DevicePolicyData.load` from `loadSettingsLocked`, called under `synchronized (getLockObject())` (`DevicePolicyManagerService.java:2344`); `getLockObject()` returns `mLockDoNoUseDirectly` (line 1054-1060). The readers `dump` (1301/1303) and `resetGlobalProxyLocked` (8867) run with that same lock held (dump via line 11689). lockdex missed the indirection through the unannotated `ActiveAdmin` serialization methods.
+**Verdict: REAL.** `run()` writes `mState = STATE_NORMAL` at `ActivityManagerShellCommand.java:2415` and reads it at `:2428`/`:2436` with no synchronization, while the AMS binder thread delivers controller callbacks (`appCrashed` `:2179`, `appNotResponding` `:2239`) that set `mState` under `synchronized(this)` (via `waitControllerLocked`, `:2356`). The shell-command `run` thread and the AMS binder thread race on this field.
 
-### 64. `ActiveAdmin.globalProxySpec` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (2/3 writes)
+### 64. `AppBatteryExemptionTracker$UidStateEventWithBattery.mBatteryUsage` — guarded by `AppRestrictionController.mLock` (2/3 writes)
 ![](findings/race/race064.svg)
-**Verdict: CONVENTION.** Identical pattern to 63: the write at `ActiveAdmin.java:820` is in `readFromXml`, invoked only through `loadSettingsLocked` under `synchronized (getLockObject())` (`DevicePolicyManagerService.java:2344`). The reads in `dump` (1297/1299) and `resetGlobalProxyLocked` (8867) hold the same lock. No real race.
+**Verdict: BENIGN.** The flagged write at `AppBatteryExemptionTracker.java:456` runs only on a freshly `clone()`d, still-unpublished event built inside the local `dest` list during the pure merge in `add()` (`:357`–`:367`); the read accessors operate on locals or list-resident events reached via `getBatteryUsageSince` under `mLock`.
 
-### 65. `ActiveAdmin.mEnrollmentSpecificId` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (2/3 writes)
+### 65. `ErrorDialogController.mWaitDialog` — guarded by `ActivityManagerService.mProcLock` (2/3 writes)
 ![](findings/race/race065.svg)
-**Verdict: CONVENTION.** Write at `ActiveAdmin.java:975` (`readFromXml`) and reads in `dump` (1430/1432) and `writeToXml` (651/652) all execute under the DPMS lock: `readFromXml`/`writeToXml` only run from `loadSettingsLocked`/`saveSettingsLocked` (`*Locked`, lock held per `DevicePolicyManagerService.java:2344`), and `dump` under `synchronized (getLockObject())` at line 11689.
+**Verdict: BENIGN.** The field is declared `@GuardedBy("mProcLock")` (`ErrorDialogController.java:62`) and `moveWaitingDialogToDefaultDisplay` is itself `@GuardedBy("mProcLock")` (`:388`), so the reads at `:390`/`:396` and write at `:398` all hold the guard; the caller at `:122` also holds `mProcLock`.
 
-### 66. `ActiveAdmin.mManagedProfileCallerIdAccess` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (3/4 writes)
+### 66. `ProcessList$ProcStateMemTracker.mPendingMemState` — guarded by `AppProfiler.mProfilerLock` (2/3 writes)
 ![](findings/race/race066.svg)
-**Verdict: CONVENTION.** Same DPMS serialization pattern: the unguarded write at `ActiveAdmin.java:1004` is in `readFromXml` (reached only via `loadSettingsLocked` holding `getLockObject()`), and the reads in `dump` (1371) and `writeToXml` (680) run with that lock held. Not a race.
+**Verdict: BENIGN.** The static `computeNextPssTime` write at `ProcessList.java:1520` is reachable only through `AppProfiler.updateNextPssTimeLPf` (`@GuardedBy("mProfilerLock")`), whose three call sites all hold `mProfilerLock` (`AppProfiler.java:1280`, `ActivityManagerService.java:8943`, `:19476`). The tool lost the lock across the static helper.
 
-### 67. `ActiveAdmin.mManagedProfileContactsAccess` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (3/4 writes)
+### 67. `ProcessRecord.mOnewayThread` — guarded by `ActivityManagerService` (2/3 writes)
 ![](findings/race/race067.svg)
-**Verdict: CONVENTION.** Identical to 66: write at `ActiveAdmin.java:1006` in `readFromXml`, reads at `dump` (1374) and `writeToXml` (682), all under `mLockDoNoUseDirectly` via the `*Locked` load/save wrappers and the locked `dump` block (`DevicePolicyManagerService.java:11689`).
+**Verdict: BENIGN.** The `makeInactive` write at `ProcessRecord.java:710` (and `makeActive` at `:697`/`:699`) is `@GuardedBy({"mService","mProcLock"})`, and the flagged read at `:688` is the `@GuardedBy(anyOf={"mService","mProcLock"})` accessor; since every writer holds `mProcLock`, even `mProcLock`-only readers are serialized.
 
-### 68. `ActiveAdmin.mOrganizationId` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (2/3 writes)
+### 68. `ServiceRecord.mFgsNotificationShown` — guarded by `ActivityManagerService$LocalService.this$0` (2/3 writes)
 ![](findings/race/race068.svg)
-**Verdict: CONVENTION.** Write at `ActiveAdmin.java:968` (`readFromXml`) and reads in `dump` (1425/1427) and `writeToXml` (648/649) are all on the lock-held serialization/dump paths described above (`loadSettingsLocked`/`saveSettingsLocked` under `getLockObject()`; `dump` at `DevicePolicyManagerService.java:11689`). No genuine race.
+**Verdict: BENIGN.** The `mPostDeferredFGSNotifications.run()` write at `ActiveServices.java:3269` executes inside `synchronized (mAm)` (`:3254`); the other writes (`:3232`, `:3341`) and the `*Locked` reads all run under `mAm`, the named guard. The tool failed to equate `mAm`/`this$0` with the AMS lock identity.
 
-### 69. `ActiveAdmin.organizationColor` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (2/3 writes)
+### 69. `ServiceRecord.pendingConnectionGroup` — guarded by `ActivityManagerService` (2/3 writes)
 ![](findings/race/race069.svg)
-**Verdict: CONVENTION.** Write at `ActiveAdmin.java:901` (`readFromXml`) and reads at `dump` (1360) and `writeToXml` (589) execute under `mLockDoNoUseDirectly` via the same `*Locked` load/save indirection and the locked `dump` block. Not a race.
+**Verdict: BENIGN.** `setProcess` is unannotated but every caller is an AM `*Locked` method holding `mAm` (e.g. `realStartServiceLocked`, `ActiveServices.java:6254`), so the write at `ServiceRecord.java:1260` is guarded; the dump reads at `:1034`/`:1036` run via `dumpServiceLocalLocked` under `synchronized(mAm)` (`:8180`).
 
-### 70. `ActiveAdmin.specifiesGlobalProxy` — guarded by `DevicePolicyManagerService.mLockDoNoUseDirectly` (2/3 writes)
+### 70. `ServiceRecord.pendingConnectionImportance` — guarded by `ActivityManagerService` (2/3 writes)
 ![](findings/race/race070.svg)
-**Verdict: CONVENTION.** Write at `ActiveAdmin.java:817` (`readFromXml`), reads at `dump` (1289), `writeToXml` (462), and `resetGlobalProxyLocked` (8866) all hold `mLockDoNoUseDirectly`: serialization runs under the `*Locked` load/save wrappers (lock acquired at `DevicePolicyManagerService.java:2344`), `dump` under line 11689, and `resetGlobalProxyLocked` is itself `*Locked`. No real race.
+**Verdict: BENIGN.** Same path as #69: the write at `ServiceRecord.java:1260` is reached only through `mAm`-holding `*Locked` callers of `setProcess`, and the dump read at `:1037` runs under `synchronized(mAm)` (`:8180`).
 
-### 71. `DevicePolicyData.mFailedPasswordAttempts` — guarded by `mLockDoNoUseDirectly` (2/3 writes)
+### 71. `ServiceRecord.tracker` — guarded by `ProcessStatsService.mLock` (3/4 writes)
 ![](findings/race/race071.svg)
-**Verdict: CONVENTION.** The flagged write is in the static `DevicePolicyData.load` at `DevicePolicyData.java:518`, reached only via `DevicePolicyManagerService.loadSettingsLocked` → `getUserData`, which calls it inside `synchronized (getLockObject())` (`DevicePolicyManagerService.java:2344-2349`). The two `store` "violations" at lines 272/274 are reads under `saveSettingsLocked` (`DevicePolicyManagerService.java:3339-3340`), also lock-held. The lock is lost only because `store`/`load` are static helpers that don't re-acquire it.
+**Verdict: IDENTITY.** Every `getTracker()` call site (the writer at `ServiceRecord.java:1184`) is inside a `synchronized(mAm.mProcessStats.mLock)` block (e.g. `ActiveServices.java:1246`, `:1543`), and all flagged reads (`:7637/7103/7044/6934/1675/1872`) are `r.tracker != null` null-checks inside `*Locked` methods under the outer AMS lock. Effectively guarded by the AMS lock as the outer monitor, with `mProcessStats.mLock` as the inner write lock.
 
-### 72. `DevicePolicyData.mNewUserDisclaimer` — guarded by `mLockDoNoUseDirectly` (2/3 writes)
+### 72. `AppOpsService.mFastWriteScheduled` — guarded by `AppOpsService` (2/3 writes)
 ![](findings/race/race072.svg)
-**Verdict: CONVENTION.** Same shape as #71: the write at `DevicePolicyData.java:460` is in static `load`, invoked from `loadSettingsLocked` under `synchronized (getLockObject())`. The `store` reads (226/227) run under `saveSettingsLocked`, and `dump`/`isNewUserDisclaimerAcknowledged` are instance accessors called from lock-held DPMS paths. No unguarded mutation exists.
+**Verdict: IDENTITY.** The flagged write at `AppOpsService.java:352` is the first statement inside `synchronized (AppOpsService.this)` opened at `:350` in `mWriteRunner.run()`. The lock object is exactly the declared guard; the tool mis-scored the synchronized-on-`this` block.
 
-### 73. `OwnersData.mDeviceOwner` — guarded by `Owners.mData` (3/4 writes)
+### 73. `AppOpsService.mWriteScheduled` — guarded by `AppOpsService` (3/4 writes)
 ![](findings/race/race073.svg)
-**Verdict: CONVENTION.** The write at `OwnersData.java:492` is in `DeviceOwnerReadWriter.readInner`, reachable only through `OwnersData.load` → `readFromFileLocked`, and `Owners.load` runs it inside `synchronized (mData)` (`Owners.java:100-103`). All read "violations" (`pushToAppOpsLocked`, `pushToPackageManagerLocked`, `dump`, `PolicyVersionUpgrader.*`) are `@GuardedBy("mData")` or invoked under it. The analyzer drops the lock across the inner-class `*Locked` indirection.
+**Verdict: IDENTITY.** The write at `AppOpsService.java:351` sits directly under `synchronized (AppOpsService.this)` (`:350`) in `mWriteRunner.run()`, holding the declared guard.
 
-### 74. `OwnersData.mSystemUpdatePolicy` — guarded by `Owners.mData` (2/3 writes)
+### 74. `AttributedOp.mAccessEvents` — guarded by `AppOpsService` (2/3 writes)
 ![](findings/race/race074.svg)
-**Verdict: CONVENTION.** Identical mechanism to #73: write at `OwnersData.java:504` in `readInner` is reached via `mData.load()` under `synchronized (mData)` (`Owners.java:103`); the `writeInner` reads (423/425) run via `writeDeviceOwner` under `synchronized (mData)` (`Owners.java:524-528`). Guarded in source.
+**Verdict: IDENTITY.** `finishOrPause` carries `@SuppressWarnings("GuardedBy") // Lock is held on mAppOpsService` (`AttributedOp.java:311`); every entry — `packageRemoved`→`packageRemovedLocked` (`AppOpsService.java:1440`), `onUidStateChanged` (`:1511`), the death-recipient `onClientDeath` (`AttributedOp.java:480`) — holds the AppOpsService monitor before the write at `:332`.
 
-### 75. `SecurityLogMonitor.mAllowedToRetrieve` — guarded by `mLock` (5/6 writes)
+### 75. `AttributedOp.mInProgressEvents` — guarded by `AppOpsService` (3/4 writes)
 ![](findings/race/race075.svg)
-**Verdict: CONVENTION.** The write at `SecurityLogMonitor.java:259` is in `resetLegacyBufferLocked`, which is `@GuardedBy("mLock")` and only ever called inside `mLock.lock()`/`finally unlock()` regions (e.g. `SecurityLogMonitor.java:199`, `:220`). `mLock` is an explicit `ReentrantLock` (`:63`); the analyzer fails to track the lock token through `.lock()` rather than `synchronized`.
+**Verdict: IDENTITY.** Same helper-indirection: the write at `AttributedOp.java:354` is inside `finishOrPause`, reached only from `finished()`/`onClientDeath`/`onUidStateChanged`, all of which acquire `synchronized(mAppOpsService)` (e.g. `:480`, `AppOpsService.java:1440`).
 
-### 76. `SecurityLogMonitor.mNextAllowedRetrievalTimeMillis` — guarded by `mLock` (2/3 writes)
+### 76. `AttributedOp.mPausedInProgressEvents` — guarded by `AppOpsService` (3/4 writes)
 ![](findings/race/race076.svg)
-**Verdict: CONVENTION.** Same as #75: write at `SecurityLogMonitor.java:260` sits in `resetLegacyBufferLocked` (`@GuardedBy("mLock")`), invoked only under `mLock.lock()`. The lone read is also lock-held. False positive from explicit `ReentrantLock` usage.
+**Verdict: IDENTITY.** `finishPossiblyPaused` is `@SuppressWarnings("GuardedBy") // Lock is held on mAppOpsService` (`AttributedOp.java:368`); the write at `:392` is reached only via `finishOrPause`←`finished`/`onClientDeath`, each under the AppOpsService monitor.
 
-### 77. `SecurityLogMonitor.mPaused` — guarded by `mLock` (2/3 writes)
+### 77. `AudioDeviceBroker.mBluetoothA2dpSuspendedApplied` — guarded by `AudioDeviceBroker.mBluetoothAudioStateLock` (3/4 writes)
 ![](findings/race/race077.svg)
-**Verdict: CONVENTION.** The write at `SecurityLogMonitor.java:236` is in `startMonitorThreadLocked` (`@GuardedBy("mLock")`), called at `:214` inside `mLock.lock()`. The read at `:650` is in `addAuditLogEventsLocked`, also `@GuardedBy("mLock")`. Properly guarded via the `ReentrantLock`.
+**Verdict: BENIGN.** The write at `AudioDeviceBroker.java:1254` is in `reapplyAudioHalBluetoothState`, `@GuardedBy("mBluetoothAudioStateLock")` (`:1241`) with the lock caller-held; the in-method reads at 1244/1258 are under that guard. The only lock-free access is the diagnostic `dump` read of this `boolean` (`:1877`).
 
-### 78. `DisplayManagerService.mUserDisabledHdrTypes` — guarded by `mSyncRoot` (2/3 writes)
+### 78. `AudioDeviceBroker.mBluetoothLeSuspendedApplied` — guarded by `AudioDeviceBroker.mBluetoothAudioStateLock` (3/4 writes)
 ![](findings/race/race078.svg)
-**Verdict: CONVENTION.** Field is `@GuardedBy("mSyncRoot")` (`DisplayManagerService.java:319-320`); the write at `:1416` is in `updateUserDisabledHdrTypesFromSettingsLocked`, whose sole flagged caller (`:902`) runs inside `synchronized (mSyncRoot)` opened at `:889`. The `*Locked` helper doesn't itself re-acquire `mSyncRoot`, which is why it was flagged.
+**Verdict: BENIGN.** Identical to #77: the write at `AudioDeviceBroker.java:1255` and reads at 1244/1263 are inside `@GuardedBy("mBluetoothAudioStateLock")` `reapplyAudioHalBluetoothState`; the sole unguarded touch is the lock-free `dump` read of the boolean at `:1881`.
 
-### 79. `AbstractPerUserSystemService.mServiceInfo` — guarded by `mLock` (2/3 writes)
+### 79. `AudioService.mVibrateSetting` — guarded by `AudioService.mSettingsLock` (2/3 writes)
 ![](findings/race/race079.svg)
-**Verdict: IDENTITY.** The write at `AbstractPerUserSystemService.java:237` (plus 224/230) is directly inside `synchronized (mLock)` opened at `:206`, on a field declared `@GuardedBy("mLock")` (`:69-70`). `mLock` is a constructor-injected shared `Object` (`:52`, `:75`), so the analyzer cannot prove the monitor at the write site is the same object as the declared guard. Genuinely guarded in source.
+**Verdict: REAL.** `setVibrateSetting` does a read-modify-write of the non-volatile int at `AudioService.java:6898` with no lock held, and `getVibrateSetting` reads it lock-free at `:6890`; both are public binder entry points invokable concurrently from any app's binder thread. The init/settings-reload writes at `:3411`/`:3415` happen under `synchronized(mSettingsLock)`, so a concurrent binder `setVibrateSetting` races (lost update / stale read). Low-impact (deprecated) but a genuine unguarded race.
 
-### 80. `InputContentUriTokenHandler.mPermissionOwnerToken` — guarded by `mLock` (2/3 writes)
+### 80. `BtHelper.mScoAudioState` — guarded by `BtHelper` (18/19 writes)
 ![](findings/race/race080.svg)
-**Verdict: UNCLEAR (in fact guarded).** The write at `InputContentUriTokenHandler.java:101` is unambiguously inside `synchronized (mLock)` (opened at `:92`) on the `@GuardedBy("mLock")` field, with `mLock` a plain per-instance `Object` (`:45`) — so this is not a real race. The only plausible cause is the held-set being dropped across the enclosing `try/finally`; flagged in error, the write is correctly guarded.
+**Verdict: BENIGN.** The tool inferred the monitor as guard because 18 writers are `synchronized` methods, but the field's real contract is `@GuardedBy("mDeviceBroker.mDeviceStateLock")` (`BtHelper.java:585`). The flagged write in `resetBluetoothSco` (`:587`) is reached only under `synchronized(mDeviceStateLock)`; the `isBluetoothScoRequestedInternally` read (`:501`) runs inside `@GuardedBy("mDeviceStateLock")` `setCommunicationRouteForClient`. The only lock-free access is the single-int read in `dump` (`:1474`).
 
-### 81. `JobSchedulerService$BatteryStateTracker.mBatteryNotLow` — guarded by `JobSchedulerService.mLock` (2/3 writes)
+### 81. `FocusRequester.mFocusLossFadeLimbo` — guarded by `MediaFocusControl.mAudioFocusLock` (3/4 writes)
 ![](findings/race/race081.svg)
-**Verdict: CONVENTION.** The unguarded write at `JobSchedulerService.java:4361` is inside `startTracking()`, which runs exactly once from the constructor path at `JobSchedulerService.java:2683-2684` to initialize a freshly-allocated, not-yet-published tracker before any controller or accessor can touch it. The read at `JobSchedulerService.java:4390` (`isBatteryNotLow()`) is a bare accessor, but its only real callers go through the `synchronized (mLock)` wrappers at `JobSchedulerService.java:5619-5622`. No genuine race.
+**Verdict: BENIGN.** The flagged write at `FocusRequester.java:516` is inside `frameworkHandleFocusLoss`, `@GuardedBy("MediaFocusControl.mAudioFocusLock")` and reachable only from the guarded `handleFocusLoss`. The flagged `dump` read at `:267` is reached only via `dumpFocusStack`/`dumpExtFocusPolicyFocusOwners`, both iterating inside `synchronized(mAudioFocusLock)` (`MediaFocusControl.java:490`).
 
-### 82. `JobSchedulerService$BatteryStateTracker.mCharging` — guarded by `JobSchedulerService.mLock` (2/3 writes)
+### 82. `FocusRequester.mFocusLossReceived` — guarded by `MediaFocusControl.mAudioFocusLock` (2/3 writes)
 ![](findings/race/race082.svg)
-**Verdict: CONVENTION.** Identical pattern to 81: the unguarded write at `JobSchedulerService.java:4362` is fresh-object initialization in `startTracking()`, invoked once before publication at `JobSchedulerService.java:2684`. The read at `JobSchedulerService.java:4512` (`isConsideredCharging()`) is a private helper reached either from within `synchronized (mLock)` blocks (`onReceiveInternal`, `onChargingPolicyChanged`) or via the locked `isBatteryCharging()` accessor at `JobSchedulerService.java:5613`. Not a real race.
+**Verdict: BENIGN.** The write at `FocusRequester.java:403` and reads at `:402/:411/:450/:451/:454` are all within `handleFocusLoss` (`@GuardedBy("...mAudioFocusLock")`). The other flagged reads (`focusLossToString:242`, `toAudioFocusInfo:607`) are invoked only from `dump`/guarded dispatch under `synchronized(mAudioFocusLock)`.
 
-### 83. `JobServiceContext.mRunningJobWorkType` — guarded by `JobSchedulerService.mLock` (2/3 writes)
+### 83. `MediaFocusControl.mFocusFreezeExemptUids` — guarded by `MediaFocusControl.mAudioFocusLock` (2/3 writes)
 ![](findings/race/race083.svg)
-**Verdict: CONVENTION.** The write at `JobServiceContext.java:1774` and read at `:1768` are both inside `closeAndCleanupJobLocked`, a `*Locked` method requiring the shared mLock. The flagged unguarded read in `getRunningJobWorkType()` (`JobServiceContext.java:685`) is a plain accessor, but every caller in `JobConcurrencyManager` (lines 853, 1015, 1837) sits inside `@GuardedBy("mLock")` methods (`prepareForAssignmentDeterminationLocked`, `shouldStopRunningJobLocked`), and that mLock is the same JobSchedulerService instance. Lock held by convention at all call sites.
+**Verdict: BENIGN.** The flagged write (`MediaFocusControl.java:1482`) sits in the `catch (RemoteException)` block of `enterAudioFocusFreezeForTest`, entirely inside `synchronized(mAudioFocusLock)` opened at `:1462`. The tool mis-flagged a write lexically within the synchronized block (confused by the catch clause); the guard is held.
 
-### 84. `ContextHubEndpointBroker.mIsRegistered` — guarded by `ContextHubEndpointBroker.mRegistrationLock` (2/3 writes)
+### 84. `MediaFocusControl.mFocusFreezerForTest` — guarded by `MediaFocusControl.mAudioFocusLock` (2/3 writes)
 ![](findings/race/race084.svg)
-**Verdict: CONVENTION.** Both the write (`ContextHubEndpointBroker.java:589`) and the flagged read (`:585`) live in `registerLocked`, which is annotated `@GuardedBy("mRegistrationLock")` and is only ever entered via `register()` under `synchronized (mRegistrationLock)` at `ContextHubEndpointBroker.java:578-580`. The `*Locked` suffix correctly signals caller-holds-lock; no unguarded access.
+**Verdict: BENIGN.** Same `enterAudioFocusFreezeForTest` body: the flagged write (`MediaFocusControl.java:1481`, the `catch` clause's `mFocusFreezerForTest = null`) is inside the `synchronized(mAudioFocusLock)` block at `:1462`. A lexical-scope false positive in the catch handler.
 
-### 85. `ComprehensiveCountryDetector.mLocationRefreshTimer` — guarded by `ComprehensiveCountryDetector` (2/3 writes)
+### 85. `SpatializerHelper.mCapableSpatLevel` — guarded by `SpatializerHelper` (2/3 writes)
 ![](findings/race/race085.svg)
-**Verdict: REAL.** The field is otherwise consistently guarded by the instance monitor (`scheduleLocationRefresh`/`cancelLocationRefresh` are `synchronized` at `ComprehensiveCountryDetector.java:413,435`), but the write `mLocationRefreshTimer = null` at `ComprehensiveCountryDetector.java:426` executes inside an anonymous `TimerTask.run()` on a Timer thread with no lock held and against a different `this`. This races with the synchronized read/cancel at `:436-438` — a concurrent `cancelLocationRefresh()` can call `cancel()` on a Timer the task is simultaneously nulling, or observe a stale non-null reference.
+**Verdict: BENIGN.** The write at `SpatializerHelper.java:342` (`resetCapabilities`) runs only from `init()` (`synchronized`), so writes are guarded. The flagged read at `:1631` is in the unsynchronized `dump` called on the binder dump thread — but a lock-free read of a plain `int` where a momentarily stale debug value is harmless.
 
-### 86. `LocationBasedCountryDetector.mTimer` — guarded by `LocationBasedCountryDetector` (2/3 writes)
+### 86. `SpatializerHelper.mDynSensorCallback` — guarded by `SpatializerHelper` (2/3 writes)
 ![](findings/race/race086.svg)
-**Verdict: REAL.** Same defect as 85: `mTimer` is guarded by the instance monitor everywhere else (`detectCountry` and `stop()` are `synchronized` at `LocationBasedCountryDetector.java:164,221`), but the bare `mTimer = null` at `LocationBasedCountryDetector.java:203` runs in an unsynchronized `TimerTask.run()` on the Timer thread before it calls the synchronized `stop()`. That write races the synchronized read-and-cancel in `stop()` at `:228-230`.
+**Verdict: BENIGN.** The only flagged violation is the write at `SpatializerHelper.java:1542`, inside `onInitSensors`, declared `synchronized void onInitSensors()` at `:1519`. The write holds the monitor.
 
-### 87. `LocalEventLog.mLastLogTime` — guarded by `LocalEventLog` (2/3 writes)
+### 87. `SpatializerHelper.mSensorManager` — guarded by `SpatializerHelper` (2/3 writes)
 ![](findings/race/race087.svg)
-**Verdict: CONVENTION.** The write/read at `LocalEventLog.java:171` and read at `:156` are inside `addLogEventInternal`, annotated `@GuardedBy("this")` (`LocalEventLog.java:153`). Its only callers, `addLog` (`:121`) and `clear()` (`:175`), are `synchronized` instance methods, so the instance monitor (the reported guard) is always held. Caller-holds-lock convention.
+**Verdict: BENIGN.** The flagged write at `SpatializerHelper.java:1541` is in `onInitSensors`, declared `synchronized` at `:1519`, so it runs under the guard.
 
-### 88. `LocalEventLog.mModificationCount` — guarded by `LocalEventLog` (2/3 writes)
+### 88. `AutofillInlineSuggestionsRequestSession.mImeSessionInvalidated` — guarded by `AutofillInlineSessionController.mLock` (2/3 writes)
 ![](findings/race/race088.svg)
-**Verdict: CONVENTION.** The write at `LocalEventLog.java:161` is in the `@GuardedBy("this")` `addLogEventInternal`, reached only via the `synchronized` `addLog`. The flagged read in `LogIterator.checkModifications` (`LocalEventLog.java:334`) is itself `@GuardedBy("LocalEventLog.this")` and only invoked during `iterate()`/`hasNext()`, which hold the same instance monitor at `:197`. Lock held throughout by convention.
+**Verdict: IDENTITY.** Both the flagged write (`onCreateInlineSuggestionsRequestLocked`, `:199`) and read (`onInlineSuggestionsResponseLocked`, `:165`) are `@GuardedBy("mLock")`. The session's `mLock` is injected at construction (`:122`); `AutofillInlineSessionController` passes its own `mLock` into the session (`:94`), so the local `mLock` is the same object as the guard.
 
-### 89. `LocalEventLog.mStartTime` — guarded by `LocalEventLog` (2/3 writes)
+### 89. `AutofillManagerServiceImpl.mRemoteAugmentedAutofillService` — guarded by `AbstractPerUserSystemService.mLock` (2/3 writes)
 ![](findings/race/race089.svg)
-**Verdict: CONVENTION.** Both the write at `LocalEventLog.java:160` and read at `:156` are in `addLogEventInternal` (`@GuardedBy("this")`), and the field is otherwise touched only in `addLog` and the `synchronized clear()` (`:183`). All paths hold the `LocalEventLog` instance monitor that is the reported guard; the `*Internal` helper relies on caller-holds-lock.
+**Verdict: IDENTITY.** The write (`AutofillManagerServiceImpl.java:1732`) and reads (`:1667`, `:1739`) are all inside `getRemoteAugmentedAutofillServiceLocked`, `@GuardedBy("mLock")`. The class extends `AbstractPerUserSystemService` (`:117`) without shadowing `mLock`, so it resolves to the inherited `public final Object mLock` — the guard object itself.
 
-### 90. `MediaSessionService$SessionManagerImpl$KeyEventWakeLockReceiver.mRefCount` — guarded by `MediaSessionService.mLock` (2/3 writes)
+### 90. `Session$AssistDataReceiverImpl.mPendingFillRequest` — guarded by `AbstractPerUserSystemService.mLock` (5/6 writes)
 ![](findings/race/race090.svg)
-**Verdict: CONVENTION.** The write at `MediaSessionService.java:2893` and read at `:2890` are inside `acquireWakeLockLocked`, whose two call sites (`MediaSessionService.java:2690,2707`) are both within the `synchronized (mLock)` block opened at `:2472`. The receiver's other accesses (`onTimeout`, `onReceiveResult`) take `synchronized (mLock)` explicitly at `:2878,2911`. The `*Locked` accessor correctly assumes caller-held mLock; no real race.
+**Verdict: IDENTITY.** The unannotated write at `Session.java:766` (`newAutofillRequestLocked`) is reached only from `requestNewFillResponseLocked` (`:1572`, `:1595`), which is `@GuardedBy("mLock")` (`:1460`). `Session.mLock` is injected (`:1699`) from `AutofillManagerServiceImpl`'s inherited `mLock` at `new Session(..., mLock, ...)` (`:712`), so it is the same object as the `AbstractPerUserSystemService.mLock` guard.
 
-### 91. `NetworkPolicyManagerService$UidBlockedState.allowedReasons` — guarded by `mUidBlockedState` (4/5 writes)
+### 91. `Session$AssistDataReceiverImpl.mPendingInlineSuggestionsRequest` — guarded by `AbstractPerUserSystemService.mLock` (2/3 writes)
 ![](findings/race/race091.svg)
-**Verdict: CONVENTION.** The flagged access at `NetworkPolicyManagerService.java:7022` lives inside `copyFrom`, an unsynchronized helper, but both call sites (`NetworkPolicyManagerService.java:5432` and `:5576`) invoke it inside `synchronized (mUidBlockedState)`. Every read site (`deriveUidRules`, `updateEffectiveBlockedReasons`, `toString`, and `NetworkPolicyLogger.networkBlocked` at `NetworkPolicyLogger.java:111`) is likewise reached only under the `mUidBlockedState` monitor — the logger read is dispatched from `isUidNetworkingBlocked` at `NetworkPolicyManagerService.java:6491` while that lock is held. The unguarded "write" is the field initialization in the `UidBlockedState` constructor on a not-yet-published object.
+**Verdict: IDENTITY.** The flagged write at `Session.java:768` is inside `newAutofillRequestLocked`, `@GuardedBy("mLock")` (`:764`); `Session.mLock` (`:1699`) is the `lock` object `AutofillManagerServiceImpl` passes from `AbstractPerUserSystemService.mLock`. One object; the write is properly guarded.
 
-### 92. `NetworkPolicyManagerService$UidBlockedState.blockedReasons` — guarded by `mUidBlockedState` (5/6 writes)
+### 92. `Session$AssistDataReceiverImpl.mWaitForInlineRequest` — guarded by `AbstractPerUserSystemService.mLock` (2/3 writes)
 ![](findings/race/race092.svg)
-**Verdict: CONVENTION.** Identical pattern to finding 91: the violation at `NetworkPolicyManagerService.java:7021` is in the unsynchronized `copyFrom`, whose only callers (`:5432`, `:5576`) hold `synchronized (mUidBlockedState)`. The read in `NetworkPolicyLogger.networkBlocked` (`NetworkPolicyLogger.java:111`) executes under a different monitor (`NetworkPolicyLogger.mLock`) but is only ever called from `NetworkPolicyManagerService.java:6491` while `mUidBlockedState` is held, so the field is consistently published. The lone unguarded write is constructor-time initialization.
+**Verdict: IDENTITY.** Same `newAutofillRequestLocked` (`Session.java:767`), same `@GuardedBy("mLock")` contract (`:764`). The other write site `handleInlineSuggestionRequest` (`:789`) takes `synchronized(mLock)` explicitly, confirming the lock object is the master-derived `AbstractPerUserSystemService.mLock`.
 
-### 93. `PreferencesHelper$PackagePreferences.bubblePreference` — guarded by `mLock` (2/3 writes)
+### 93. `Session$ClassificationState.mPendingFieldClassificationRequest` — guarded by `AbstractPerUserSystemService.mLock` (2/3 writes)
 ![](findings/race/race093.svg)
-**Verdict: CONVENTION.** The write at `PreferencesHelper.java:373` is in `restorePackageLocked`, annotated `@GuardedBy("mLock")` and invoked under `synchronized (mLock)` at `:321`. The read at `:786` is in `writePackageXml`, also `@GuardedBy("mLock")` (`:761`) and called only from `writeXml` inside `synchronized (mLock)` at `:730`. The third write is field initialization on a fresh, unpublished `PackagePreferences`.
+**Verdict: IDENTITY.** The write in `updateResponseReceived` (`Session.java:7356`) and the read in `ClassificationState.toString` (`:7384`) are both inside methods annotated `@GuardedBy("mLock")` (`:7352`, `:7377`). That `mLock` is the shared per-user/master lock; the flag is the analyzer treating the inherited field as distinct.
 
-### 94. `PreferencesHelper$PackagePreferences.delegate` — guarded by `mLock` (2/3 writes)
+### 94. `Session.mClientVulture` — guarded by `AbstractMasterSystemService.mLock` (2/3 writes)
 ![](findings/race/race094.svg)
-**Verdict: CONVENTION.** The write at `PreferencesHelper.java:440` is in `@GuardedBy("mLock") restorePackageLocked`, run under the lock at `:321`. All reads are lock-held: `writePackageXml` (`:814`–`819`) and `dumpPackagePreferencesLocked` (`:2452`–`2454`) are `@GuardedBy`/`*Locked` methods, and `isValidDelegate` (`:3401`) is reached only via `isDelegateAllowed` inside `synchronized (mLock)` at `:2329`. The unguarded write is the `delegate = null` field initializer on an unpublished object.
+**Verdict: IDENTITY.** The write (`Session.java:1901`) and reads (`:1896-1897`) live entirely within `unlinkClientVultureLocked`, `@GuardedBy("mLock")` (`:1894`). `AbstractMasterSystemService.mLock` (`:139`) is the single `Object` propagated down to `Session.mLock`, so these hold exactly the named guard.
 
-### 95. `PreferencesHelper$PackagePreferences.lockedAppFields` — guarded by `mLock` (4/5 writes)
+### 95. `Session.mSessionState` — guarded by `AbstractMasterSystemService.mLock` (2/3 writes)
 ![](findings/race/race095.svg)
-**Verdict: CONVENTION.** The flagged write at `PreferencesHelper.java:377` is in `restorePackageLocked` (`@GuardedBy("mLock")`, called under the lock at `:321`), and the read at `:790` is in `writePackageXml` (`@GuardedBy("mLock")`, called under the lock at `:730`). The unaccounted write is constructor-time initialization on a not-yet-shared `PackagePreferences`.
+**Verdict: BENIGN.** The write in `removeFromServiceLocked` (`Session.java:8007`) is under `@GuardedBy("mLock")` (`:7984`); the only unguarded access is the read at `:7406` inside the non-`@GuardedBy` `toString()` — a lock-free debug read of a plain `@SessionState int`, a benign value-tear at worst.
 
-### 96. `PreferencesHelper$PackagePreferences.priority` — guarded by `mLock` (2/3 writes)
+### 96. `Session.mWaitForImeAnimation` — guarded by `AbstractMasterSystemService.mLock` (2/3 writes)
 ![](findings/race/race096.svg)
-**Verdict: CONVENTION.** Write at `PreferencesHelper.java:374` is in `@GuardedBy("mLock") restorePackageLocked` (locked at `:321`). Reads at `:675`/`:680` (`createDefaultChannelIfNeededLocked`), `:2426`–`:2519` (`dumpPackagePreferencesLocked`), and `:780` (`writePackageXml`) are all `*Locked`/`@GuardedBy` methods reached only under `mLock`. The extra write is the field initializer on a fresh object.
+**Verdict: IDENTITY.** The write in `resetImeAnimationState` is inside `synchronized(mLock)` (`Session.java:5579-5580`), and the flagged read at `:5844` sits inside the `synchronized(mLock)` block opened at `:5813` within `requestShowFillDialog`. Both touch the master-derived `mLock`.
 
-### 97. `PreferencesHelper$PackagePreferences.showBadge` — guarded by `mLock` (3/4 writes)
+### 97. `BackupAgentConnectionManager.mCurrentConnection` — guarded by `mAgentConnectLock` (5/6 writes)
 ![](findings/race/race097.svg)
-**Verdict: CONVENTION.** Write at `PreferencesHelper.java:376` is in lock-held `restorePackageLocked` (`:321`); reads at `:789` (`writePackageXml`) and `:2434`–`:2521` (`dumpPackagePreferencesLocked`) are `@GuardedBy("mLock")`/`*Locked` methods invoked under `mLock`. The remaining write is constructor initialization on an unpublished `PackagePreferences`.
+**Verdict: BENIGN.** The flagged write at `BackupAgentConnectionManager.java:167` is in the `InterruptedException` catch inside the `while` loop of `bindToAgentSynchronous`, fully enclosed by `synchronized(mAgentConnectLock)` (opened `:134`, closed `:183`). It follows `mAgentConnectLock.wait(5000)`; `Object.wait` reacquires the monitor before returning, so the write executes under the named lock.
 
-### 98. `PreferencesHelper$PackagePreferences.visibility` — guarded by `mLock` (2/3 writes)
+### 98. `UserBackupManagerService.mClearingData` — guarded by `mClearDataLock` (2/3 writes)
 ![](findings/race/race098.svg)
-**Verdict: CONVENTION.** Write at `PreferencesHelper.java:375` is in `@GuardedBy("mLock") restorePackageLocked` (locked at `:321`); reads in `createDefaultChannelIfNeededLocked` (`:676`/`:683`), `dumpPackagePreferencesLocked` (`:2430`–`:2520`), and `writePackageXml` (`:783`) are all reached only under `mLock`. The unguarded write is the field initializer on a not-yet-shared object.
+**Verdict: BENIGN.** Same wait/reacquire pattern: the write at `UserBackupManagerService.java:1610` is in the `InterruptedException` catch within `synchronized(mClearDataLock)` (opened `:1598`, closed `:1624`), reached after `mClearDataLock.wait(5000)`. The monitor is held when the write runs.
 
-### 99. `InstallDependencyHelper$DependencyInstallerCallbackCallOnce.mDependencyInstallerCallbackInvoked` — guarded by `DependencyInstallerCallbackCallOnce` (2/3 writes)
+### 99. `UserBackupManagerService.mJournal` — guarded by `mQueueLock` (2/3 writes)
 ![](findings/race/race099.svg)
-**Verdict: CONVENTION.** The flagged write at `InstallDependencyHelper.java:366` is itself inside `synchronized (this)` (block opens at `:365`), as are the other two writes at `:327` and `:379`; the analyzer's line attribution to the enclosing `onAllDependenciesResolved` is misleading since that specific statement is guarded. The one "unguarded" write is the field initializer `= false` at `:312`, executed during construction before publication.
+**Verdict: REAL.** `mJournal` (`UserBackupManagerService.java:329`) is a plain non-volatile, non-`@GuardedBy` field. The guarded writes at `:2333`/`:2337` run under `synchronized(mQueueLock)`, but `getJournal()` (`:778`) and `setJournal()` (`:782`) are unsynchronized, and `BackupHandler.java:172` reads via `getJournal()` *outside* the `mQueueLock` block it opens at `:173` (backup handler thread), while `parseLeftoverJournals` (`:1073`, posted at init) also reads it lock-free. A backup-thread read races concurrent `mQueueLock`-guarded writes with no happens-before edge.
 
-### 100. `PowerManagerService$SuspendBlockerImpl.mReferenceCount` — guarded by `SuspendBlockerImpl` (3/4 writes)
+### 100. `ProgramInfoCache.mComplete` — guarded by `RadioModule.mLock` (2/3 writes)
 ![](findings/race/race100.svg)
-**Verdict: CONVENTION.** The read at `PowerManagerService.java:5939` and write at `:5942` occur in `finalize()` without `synchronized (this)`, whereas `acquire`/`release` (`:5959`, `:5980`) mutate the field under the object's own monitor. This is safe because `finalize()` runs on the GC finalizer thread only after the `SuspendBlockerImpl` is unreachable, so no concurrent acquire/release can exist — the unreachable-object dual of the fresh-object convention, not a real race.
+**Verdict: BENIGN.** The flagged write at `aidl/ProgramInfoCache.java:147` is in `updateFromHalProgramListChunk`, `@VisibleForTesting` with no production caller; the real production write path `filterAndApplyChunk` (`:249`) is invoked from `RadioModule.java:147` under `synchronized(mLock)`. The `toString` read (`:102`) is reached only via the dump under `synchronized(mLock)` (`:547`).
 
 ---
 
 ## What this says about the tool
 
-Guard-by-inference is a recall instrument: it surfaces every field whose locking
-isn't uniform, which is exactly the set a reviewer wants to *look* at — but the
-majority of that set is explained by three things the bytecode doesn't carry: object
-identity for a shared data class, the identity of an injected or `ReentrantLock`
-lock, and the `*Locked` caller-holds-lock contract. The three real races all have the
-same signature — a field synchronized everywhere except a `TimerTask`/deprecated-setter
-path — which is the shape worth alerting on. A useful next step is to suppress the two
-dominant false-positive families directly: don't generalize a guard across instances
-of a public, externally-constructed data class (`ResolveInfo`, `ActivityInfo`,
-`UserInfo`), and resolve constructor-injected `Object`/`ReentrantLock` identity so
-findings 38/39/57/58/75-77/79 collapse to non-findings.
+Crediting the guard interprocedurally is what made this list useful: the families that
+used to fill the top — `SyncStatusInfo`/`ActivityInfo` serialization, `*Locked`
+helpers whose callers hold the lock — sink to BENIGN/IDENTITY, and genuine
+inconsistently-guarded state rises. **14 of the top 100 are real**, and they fall into
+three repeatable shapes a reviewer can scan for:
+
+1. **Write after the lock is released** — `UserInfo.flags`/`.partial` mutated past the
+   end of the `mUsersLock` block; the whole `ActivityStarter.mLastStarter` cluster
+   written in `execute()`'s post-lock `finally`.
+2. **Lock-free read-modify-write on a public/binder entry** —
+   `UsbPortManager.mTransactionId++`, `AudioService.setVibrateSetting`.
+3. **Lock-free mutation of a published object that lock-holding readers observe** —
+   `NetworkPolicy.limitBytes` under `factoryReset`, `AccessibilityWindowManager.mActiveWindowId`.
+
+The two non-bug categories each point at one more fix. IDENTITY (≈40 of the 100) is a
+lock the tool *should* equate — a constructor-injected `Object`, an inherited `mLock`,
+or `synchronized(this)` reported by type — and resolving constructor-arg and inherited
+lock identity would clear most of them. BENIGN (≈45) is dominated by thread-confined
+locals and freshly-built objects, which a stronger escape/publication filter removes.
+Neither is a false alarm a human can't dismiss in seconds with the diagram and the
+cited lines — but both are mechanical, and worth removing so the 14 stand alone.
