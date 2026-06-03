@@ -51,7 +51,7 @@ impl Filter {
 }
 
 /// Diagrams beyond this many are skipped unless a filter narrows the report.
-const MAX_DIAGRAMS: usize = 50;
+const MAX_DIAGRAMS: usize = 100;
 
 /// The findings that pass a filter, as an owned report (for JSON export).
 pub fn filtered(r: &crate::analyze::RaceReport, filter: &Filter) -> crate::analyze::RaceReport {
