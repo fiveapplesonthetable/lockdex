@@ -9,33 +9,33 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 788)">
 <title>binder</title>
 <polygon fill="white" stroke="transparent" points="-4,4 -4,-788 426,-788 426,4 -4,4"/>
-<!-- m::com.android.server.am.ActivityManagerService.bindBackupAgent:(Ljava/lang/String;IIIZ)Z -->
+<!-- m::com.android.server.am.ActivityManagerService.attachApplication:(Landroid/app/IApplicationThread;J)V -->
 <g id="node1" class="node">
-<title>m::com.android.server.am.ActivityManagerService.bindBackupAgent:(Ljava/lang/String;IIIZ)Z</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M322,-702C322,-702 100,-702 100,-702 94,-702 88,-696 88,-690 88,-690 88,-678 88,-678 88,-672 94,-666 100,-666 100,-666 322,-666 322,-666 328,-666 334,-672 334,-678 334,-678 334,-690 334,-690 334,-696 328,-702 322,-702"/>
-<text text-anchor="middle" x="211" y="-681.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.bindBackupAgent</text>
+<title>m::com.android.server.am.ActivityManagerService.attachApplication:(Landroid/app/IApplicationThread;J)V</title>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M322.5,-702C322.5,-702 99.5,-702 99.5,-702 93.5,-702 87.5,-696 87.5,-690 87.5,-690 87.5,-678 87.5,-678 87.5,-672 93.5,-666 99.5,-666 99.5,-666 322.5,-666 322.5,-666 328.5,-666 334.5,-672 334.5,-678 334.5,-678 334.5,-690 334.5,-690 334.5,-696 328.5,-702 322.5,-702"/>
+<text text-anchor="middle" x="211" y="-681.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.attachApplication</text>
 </g>
-<!-- m::com.android.server.am.ActivityManagerService.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZ)Lcom/android/server/am/ProcessRecord; -->
+<!-- m::com.android.server.am.ActivityManagerService.attachApplicationLocked:(Landroid/app/IApplicationThread;IIJ)V -->
 <g id="node2" class="node">
-<title>m::com.android.server.am.ActivityManagerService.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZ)Lcom/android/server/am/ProcessRecord;</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M328,-629C328,-629 94,-629 94,-629 88,-629 82,-623 82,-617 82,-617 82,-605 82,-605 82,-599 88,-593 94,-593 94,-593 328,-593 328,-593 334,-593 340,-599 340,-605 340,-605 340,-617 340,-617 340,-623 334,-629 328,-629"/>
-<text text-anchor="middle" x="211" y="-608.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.startProcessLocked</text>
+<title>m::com.android.server.am.ActivityManagerService.attachApplicationLocked:(Landroid/app/IApplicationThread;IIJ)V</title>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M341.5,-629C341.5,-629 80.5,-629 80.5,-629 74.5,-629 68.5,-623 68.5,-617 68.5,-617 68.5,-605 68.5,-605 68.5,-599 74.5,-593 80.5,-593 80.5,-593 341.5,-593 341.5,-593 347.5,-593 353.5,-599 353.5,-605 353.5,-605 353.5,-617 353.5,-617 353.5,-623 347.5,-629 341.5,-629"/>
+<text text-anchor="middle" x="211" y="-608.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.attachApplicationLocked</text>
 </g>
-<!-- m::com.android.server.am.ActivityManagerService.bindBackupAgent:(Ljava/lang/String;IIIZ)Z&#45;&gt;m::com.android.server.am.ActivityManagerService.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZ)Lcom/android/server/am/ProcessRecord; -->
+<!-- m::com.android.server.am.ActivityManagerService.attachApplication:(Landroid/app/IApplicationThread;J)V&#45;&gt;m::com.android.server.am.ActivityManagerService.attachApplicationLocked:(Landroid/app/IApplicationThread;IIJ)V -->
 <g id="edge2" class="edge">
-<title>m::com.android.server.am.ActivityManagerService.bindBackupAgent:(Ljava/lang/String;IIIZ)Z&#45;&gt;m::com.android.server.am.ActivityManagerService.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZ)Lcom/android/server/am/ProcessRecord;</title>
+<title>m::com.android.server.am.ActivityManagerService.attachApplication:(Landroid/app/IApplicationThread;J)V&#45;&gt;m::com.android.server.am.ActivityManagerService.attachApplicationLocked:(Landroid/app/IApplicationThread;IIJ)V</title>
 <path fill="none" stroke="#64748b" d="M211,-665.81C211,-657.18 211,-646.56 211,-637.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-637.03 211,-629.03 208.2,-637.03 213.8,-637.03"/>
 </g>
-<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord; -->
+<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V -->
 <g id="node3" class="node">
-<title>m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;</title>
+<title>m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V</title>
 <path fill="#eef2ff" stroke="#a5b4fc" d="M294,-556C294,-556 128,-556 128,-556 122,-556 116,-550 116,-544 116,-544 116,-532 116,-532 116,-526 122,-520 128,-520 128,-520 294,-520 294,-520 300,-520 306,-526 306,-532 306,-532 306,-544 306,-544 306,-550 300,-556 294,-556"/>
 <text text-anchor="middle" x="211" y="-535.2" font-family="Helvetica,sans-Serif" font-size="11.00">ProcessList.startProcessLocked</text>
 </g>
-<!-- m::com.android.server.am.ActivityManagerService.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZ)Lcom/android/server/am/ProcessRecord;&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord; -->
+<!-- m::com.android.server.am.ActivityManagerService.attachApplicationLocked:(Landroid/app/IApplicationThread;IIJ)V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V -->
 <g id="edge3" class="edge">
-<title>m::com.android.server.am.ActivityManagerService.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZ)Lcom/android/server/am/ProcessRecord;&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;</title>
+<title>m::com.android.server.am.ActivityManagerService.attachApplicationLocked:(Landroid/app/IApplicationThread;IIJ)V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V</title>
 <path fill="none" stroke="#64748b" d="M211,-592.81C211,-584.18 211,-573.56 211,-564.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-564.03 211,-556.03 208.2,-564.03 213.8,-564.03"/>
 </g>
@@ -45,9 +45,9 @@
 <path fill="#eef2ff" stroke="#a5b4fc" d="M294,-483C294,-483 128,-483 128,-483 122,-483 116,-477 116,-471 116,-471 116,-459 116,-459 116,-453 122,-447 128,-447 128,-447 294,-447 294,-447 300,-447 306,-453 306,-459 306,-459 306,-471 306,-471 306,-477 300,-483 294,-483"/>
 <text text-anchor="middle" x="211" y="-462.2" font-family="Helvetica,sans-Serif" font-size="11.00">ProcessList.startProcessLocked</text>
 </g>
-<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z -->
+<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z -->
 <g id="edge4" class="edge">
-<title>m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z</title>
+<title>m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z</title>
 <path fill="none" stroke="#64748b" d="M211,-519.81C211,-511.18 211,-500.56 211,-491.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-491.03 211,-483.03 208.2,-491.03 213.8,-491.03"/>
 </g>
@@ -131,9 +131,9 @@
 <path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M283,-784C283,-784 139,-784 139,-784 133,-784 127,-778 127,-772 127,-772 127,-760 127,-760 127,-754 133,-748 139,-748 139,-748 283,-748 283,-748 289,-748 295,-754 295,-760 295,-760 295,-772 295,-772 295,-778 289,-784 283,-784"/>
 <text text-anchor="middle" x="211" y="-763.2" font-family="Helvetica,sans-Serif" font-size="11.00">am.ActivityManagerService</text>
 </g>
-<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.bindBackupAgent:(Ljava/lang/String;IIIZ)Z -->
+<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.attachApplication:(Landroid/app/IApplicationThread;J)V -->
 <g id="edge1" class="edge">
-<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.bindBackupAgent:(Ljava/lang/String;IIIZ)Z</title>
+<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.attachApplication:(Landroid/app/IApplicationThread;J)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M211,-747.64C211,-736.66 211,-722.29 211,-710.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="213.8,-710.05 211,-702.05 208.2,-710.05 213.8,-710.05"/>
 <text text-anchor="middle" x="228" y="-722.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>

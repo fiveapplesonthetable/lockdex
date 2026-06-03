@@ -9,11 +9,11 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 1007)">
 <title>binder</title>
 <polygon fill="white" stroke="transparent" points="-4,4 -4,-1007 427,-1007 427,4 -4,4"/>
-<!-- m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V -->
+<!-- m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V -->
 <g id="node1" class="node">
-<title>m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M350,-921C350,-921 72,-921 72,-921 66,-921 60,-915 60,-909 60,-909 60,-897 60,-897 60,-891 66,-885 72,-885 72,-885 350,-885 350,-885 356,-885 362,-891 362,-897 362,-897 362,-909 362,-909 362,-915 356,-921 350,-921"/>
-<text text-anchor="middle" x="211" y="-900.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.killUidForPermissionChange</text>
+<title>m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V</title>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M291,-921C291,-921 131,-921 131,-921 125,-921 119,-915 119,-909 119,-909 119,-897 119,-897 119,-891 125,-885 131,-885 131,-885 291,-885 291,-885 297,-885 303,-891 303,-897 303,-897 303,-909 303,-909 303,-915 297,-921 291,-921"/>
+<text text-anchor="middle" x="211" y="-900.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.killUid</text>
 </g>
 <!-- m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIZZZZZZIILjava/lang/String;)Z -->
 <g id="node2" class="node">
@@ -21,9 +21,9 @@
 <path fill="#eef2ff" stroke="#a5b4fc" d="M308,-848C308,-848 114,-848 114,-848 108,-848 102,-842 102,-836 102,-836 102,-824 102,-824 102,-818 108,-812 114,-812 114,-812 308,-812 308,-812 314,-812 320,-818 320,-824 320,-824 320,-836 320,-836 320,-842 314,-848 308,-848"/>
 <text text-anchor="middle" x="211" y="-827.2" font-family="Helvetica,sans-Serif" font-size="11.00">ProcessList.killPackageProcessesLSP</text>
 </g>
-<!-- m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIZZZZZZIILjava/lang/String;)Z -->
+<!-- m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIZZZZZZIILjava/lang/String;)Z -->
 <g id="edge3" class="edge">
-<title>m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIZZZZZZIILjava/lang/String;)Z</title>
+<title>m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIZZZZZZIILjava/lang/String;)Z</title>
 <path fill="none" stroke="#64748b" d="M211,-884.81C211,-876.18 211,-865.56 211,-856.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-856.03 211,-848.03 208.2,-856.03 213.8,-856.03"/>
 </g>
@@ -167,9 +167,9 @@
 <path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M176,-1003C176,-1003 32,-1003 32,-1003 26,-1003 20,-997 20,-991 20,-991 20,-979 20,-979 20,-973 26,-967 32,-967 32,-967 176,-967 176,-967 182,-967 188,-973 188,-979 188,-979 188,-991 188,-991 188,-997 182,-1003 176,-1003"/>
 <text text-anchor="middle" x="104" y="-982.2" font-family="Helvetica,sans-Serif" font-size="11.00">am.ActivityManagerService</text>
 </g>
-<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V -->
+<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V -->
 <g id="edge1" class="edge">
-<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V</title>
+<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M126.95,-966.84C142.89,-954.92 164.27,-938.94 181.47,-926.07"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="183.35,-928.17 188.08,-921.13 180,-923.68 183.35,-928.17"/>
 <text text-anchor="middle" x="181" y="-941.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
@@ -180,9 +180,9 @@
 <path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M411,-1003C411,-1003 225,-1003 225,-1003 219,-1003 213,-997 213,-991 213,-991 213,-979 213,-979 213,-973 219,-967 225,-967 225,-967 411,-967 411,-967 417,-967 423,-973 423,-979 423,-979 423,-991 423,-991 423,-997 417,-1003 411,-1003"/>
 <text text-anchor="middle" x="318" y="-982.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.mProcLock</text>
 </g>
-<!-- com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V -->
+<!-- com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V -->
 <g id="edge2" class="edge">
-<title>com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killUidForPermissionChange:(IILjava/lang/String;)V</title>
+<title>com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killUid:(IIIILjava/lang/String;)V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M295.05,-966.84C279.11,-954.92 257.73,-938.94 240.53,-926.07"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="242,-923.68 233.92,-921.13 238.65,-928.17 242,-923.68"/>
 <text text-anchor="middle" x="287" y="-941.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>

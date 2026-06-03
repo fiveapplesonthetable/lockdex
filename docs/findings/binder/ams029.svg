@@ -9,11 +9,11 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 1080)">
 <title>binder</title>
 <polygon fill="white" stroke="transparent" points="-4,4 -4,-1080 427,-1080 427,4 -4,4"/>
-<!-- m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V -->
+<!-- m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V -->
 <g id="node1" class="node">
-<title>m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M342,-994C342,-994 80,-994 80,-994 74,-994 68,-988 68,-982 68,-982 68,-970 68,-970 68,-964 74,-958 80,-958 80,-958 342,-958 342,-958 348,-958 354,-964 354,-970 354,-970 354,-982 354,-982 354,-988 348,-994 342,-994"/>
-<text text-anchor="middle" x="211" y="-973.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.killBackgroundProcesses</text>
+<title>m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V</title>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M348.5,-994C348.5,-994 73.5,-994 73.5,-994 67.5,-994 61.5,-988 61.5,-982 61.5,-982 61.5,-970 61.5,-970 61.5,-964 67.5,-958 73.5,-958 73.5,-958 348.5,-958 348.5,-958 354.5,-958 360.5,-964 360.5,-970 360.5,-970 360.5,-982 360.5,-982 360.5,-988 354.5,-994 348.5,-994"/>
+<text text-anchor="middle" x="211" y="-973.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.killAllBackgroundProcesses</text>
 </g>
 <!-- m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIIILjava/lang/String;)Z -->
 <g id="node2" class="node">
@@ -21,9 +21,9 @@
 <path fill="#eef2ff" stroke="#a5b4fc" d="M308,-921C308,-921 114,-921 114,-921 108,-921 102,-915 102,-909 102,-909 102,-897 102,-897 102,-891 108,-885 114,-885 114,-885 308,-885 308,-885 314,-885 320,-891 320,-897 320,-897 320,-909 320,-909 320,-915 314,-921 308,-921"/>
 <text text-anchor="middle" x="211" y="-900.2" font-family="Helvetica,sans-Serif" font-size="11.00">ProcessList.killPackageProcessesLSP</text>
 </g>
-<!-- m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIIILjava/lang/String;)Z -->
+<!-- m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIIILjava/lang/String;)Z -->
 <g id="edge3" class="edge">
-<title>m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIIILjava/lang/String;)Z</title>
+<title>m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V&#45;&gt;m::com.android.server.am.ProcessList.killPackageProcessesLSP:(Ljava/lang/String;IIIIILjava/lang/String;)Z</title>
 <path fill="none" stroke="#64748b" d="M211,-957.81C211,-949.18 211,-938.56 211,-929.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-929.03 211,-921.03 208.2,-929.03 213.8,-929.03"/>
 </g>
@@ -179,9 +179,9 @@
 <path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M176,-1076C176,-1076 32,-1076 32,-1076 26,-1076 20,-1070 20,-1064 20,-1064 20,-1052 20,-1052 20,-1046 26,-1040 32,-1040 32,-1040 176,-1040 176,-1040 182,-1040 188,-1046 188,-1052 188,-1052 188,-1064 188,-1064 188,-1070 182,-1076 176,-1076"/>
 <text text-anchor="middle" x="104" y="-1055.2" font-family="Helvetica,sans-Serif" font-size="11.00">am.ActivityManagerService</text>
 </g>
-<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V -->
+<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V -->
 <g id="edge1" class="edge">
-<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V</title>
+<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M126.95,-1039.84C142.89,-1027.92 164.27,-1011.94 181.47,-999.07"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="183.35,-1001.17 188.08,-994.13 180,-996.68 183.35,-1001.17"/>
 <text text-anchor="middle" x="181" y="-1014.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
@@ -192,9 +192,9 @@
 <path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M411,-1076C411,-1076 225,-1076 225,-1076 219,-1076 213,-1070 213,-1064 213,-1064 213,-1052 213,-1052 213,-1046 219,-1040 225,-1040 225,-1040 411,-1040 411,-1040 417,-1040 423,-1046 423,-1052 423,-1052 423,-1064 423,-1064 423,-1070 417,-1076 411,-1076"/>
 <text text-anchor="middle" x="318" y="-1055.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.mProcLock</text>
 </g>
-<!-- com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V -->
+<!-- com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V -->
 <g id="edge2" class="edge">
-<title>com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killBackgroundProcesses:(Ljava/lang/String;I)V</title>
+<title>com.android.server.am.ActivityManagerService.mProcLock&#45;&gt;m::com.android.server.am.ActivityManagerService.killAllBackgroundProcesses:()V</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M295.05,-1039.84C279.11,-1027.92 257.73,-1011.94 240.53,-999.07"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="242,-996.68 233.92,-994.13 238.65,-1001.17 242,-996.68"/>
 <text text-anchor="middle" x="287" y="-1014.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>

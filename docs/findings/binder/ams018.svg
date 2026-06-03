@@ -9,21 +9,21 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 715)">
 <title>binder</title>
 <polygon fill="white" stroke="transparent" points="-4,4 -4,-715 426,-715 426,4 -4,4"/>
-<!-- m::com.android.server.am.ActivityManagerService.finishBooting:()V -->
+<!-- m::com.android.server.am.ActivityManagerService.startIsolatedProcess:(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Runnable;)Z -->
 <g id="node1" class="node">
-<title>m::com.android.server.am.ActivityManagerService.finishBooting:()V</title>
-<path fill="#eef2ff" stroke="#a5b4fc" d="M310,-629C310,-629 112,-629 112,-629 106,-629 100,-623 100,-617 100,-617 100,-605 100,-605 100,-599 106,-593 112,-593 112,-593 310,-593 310,-593 316,-593 322,-599 322,-605 322,-605 322,-617 322,-617 322,-623 316,-629 310,-629"/>
-<text text-anchor="middle" x="211" y="-608.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.finishBooting</text>
+<title>m::com.android.server.am.ActivityManagerService.startIsolatedProcess:(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Runnable;)Z</title>
+<path fill="#eef2ff" stroke="#a5b4fc" d="M330.5,-629C330.5,-629 91.5,-629 91.5,-629 85.5,-629 79.5,-623 79.5,-617 79.5,-617 79.5,-605 79.5,-605 79.5,-599 85.5,-593 91.5,-593 91.5,-593 330.5,-593 330.5,-593 336.5,-593 342.5,-599 342.5,-605 342.5,-605 342.5,-617 342.5,-617 342.5,-623 336.5,-629 330.5,-629"/>
+<text text-anchor="middle" x="211" y="-608.2" font-family="Helvetica,sans-Serif" font-size="11.00">ActivityManagerService.startIsolatedProcess</text>
 </g>
-<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V -->
+<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord; -->
 <g id="node2" class="node">
-<title>m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V</title>
+<title>m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;</title>
 <path fill="#eef2ff" stroke="#a5b4fc" d="M294,-556C294,-556 128,-556 128,-556 122,-556 116,-550 116,-544 116,-544 116,-532 116,-532 116,-526 122,-520 128,-520 128,-520 294,-520 294,-520 300,-520 306,-526 306,-532 306,-532 306,-544 306,-544 306,-550 300,-556 294,-556"/>
 <text text-anchor="middle" x="211" y="-535.2" font-family="Helvetica,sans-Serif" font-size="11.00">ProcessList.startProcessLocked</text>
 </g>
-<!-- m::com.android.server.am.ActivityManagerService.finishBooting:()V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V -->
+<!-- m::com.android.server.am.ActivityManagerService.startIsolatedProcess:(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Runnable;)Z&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord; -->
 <g id="edge2" class="edge">
-<title>m::com.android.server.am.ActivityManagerService.finishBooting:()V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V</title>
+<title>m::com.android.server.am.ActivityManagerService.startIsolatedProcess:(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Runnable;)Z&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;</title>
 <path fill="none" stroke="#64748b" d="M211,-592.81C211,-584.18 211,-573.56 211,-564.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-564.03 211,-556.03 208.2,-564.03 213.8,-564.03"/>
 </g>
@@ -33,9 +33,9 @@
 <path fill="#eef2ff" stroke="#a5b4fc" d="M294,-483C294,-483 128,-483 128,-483 122,-483 116,-477 116,-471 116,-471 116,-459 116,-459 116,-453 122,-447 128,-447 128,-447 294,-447 294,-447 300,-447 306,-453 306,-459 306,-459 306,-471 306,-471 306,-477 300,-483 294,-483"/>
 <text text-anchor="middle" x="211" y="-462.2" font-family="Helvetica,sans-Serif" font-size="11.00">ProcessList.startProcessLocked</text>
 </g>
-<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z -->
+<!-- m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z -->
 <g id="edge3" class="edge">
-<title>m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;I)V&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z</title>
+<title>m::com.android.server.am.ProcessList.startProcessLocked:(Ljava/lang/String;Landroid/content/pm/ApplicationInfo;ZILcom/android/server/am/HostingRecord;IZZIZILjava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/Runnable;)Lcom/android/server/am/ProcessRecord;&#45;&gt;m::com.android.server.am.ProcessList.startProcessLocked:(Lcom/android/server/am/ProcessRecord;Lcom/android/server/am/HostingRecord;ILjava/lang/String;)Z</title>
 <path fill="none" stroke="#64748b" d="M211,-519.81C211,-511.18 211,-500.56 211,-491.03"/>
 <polygon fill="#64748b" stroke="#64748b" points="213.8,-491.03 211,-483.03 208.2,-491.03 213.8,-491.03"/>
 </g>
@@ -119,9 +119,9 @@
 <path fill="#fee2e2" stroke="#dc2626" stroke-width="2" d="M283,-711C283,-711 139,-711 139,-711 133,-711 127,-705 127,-699 127,-699 127,-687 127,-687 127,-681 133,-675 139,-675 139,-675 283,-675 283,-675 289,-675 295,-681 295,-687 295,-687 295,-699 295,-699 295,-705 289,-711 283,-711"/>
 <text text-anchor="middle" x="211" y="-690.2" font-family="Helvetica,sans-Serif" font-size="11.00">am.ActivityManagerService</text>
 </g>
-<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.finishBooting:()V -->
+<!-- com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.startIsolatedProcess:(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Runnable;)Z -->
 <g id="edge1" class="edge">
-<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.finishBooting:()V</title>
+<title>com.android.server.am.ActivityManagerService&#45;&gt;m::com.android.server.am.ActivityManagerService.startIsolatedProcess:(Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Runnable;)Z</title>
 <path fill="none" stroke="#dc2626" stroke-width="1.6" d="M211,-674.64C211,-663.66 211,-649.29 211,-637.09"/>
 <polygon fill="#dc2626" stroke="#dc2626" stroke-width="1.6" points="213.8,-637.05 211,-629.05 208.2,-637.05 213.8,-637.05"/>
 <text text-anchor="middle" x="228" y="-649.8" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#dc2626"> held in</text>
