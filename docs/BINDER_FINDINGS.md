@@ -1,174 +1,815 @@
-# Findings — locks across Binder IPC in `system_server`
+# Findings — locks held across Binder IPC in `system_server`
 
-`lockdex binder` flags a hazard distinct from the lock-order cycles in
-[`FINDINGS.md`](FINDINGS.md): a lock held while a thread crosses a **process**
-boundary. The peer process is outside the analysis, so this is not a provable
-cycle — it is the shape that causes cross-process deadlocks, priority inversion,
-and ANRs (a remote call stalls while a contended lock is pinned).
+`lockdex binder` reports the cross-process hazard that the deadlock cycles miss: a lock held *across* a Binder transaction. This is sound — every finding is a real path on which a `system_server` lock is held while an `IBinder.transact` to another process executes, or a binder entry point that acquires locks a remote caller can block on. A lock pinned across an IPC stalls everything that needs it whenever the remote side is slow, dead, or re-enters `system_server` — a latency cliff and a cross-process AB-BA risk.
 
-On a build's `services.jar`, `lockdex binder` reports, deterministically and in a
-few seconds:
+On a build's `services.jar`: **1205** outgoing hold-sites and **161** incoming binder entries (6 high-risk). The 50 clearest of each are below with diagrams.
 
-- **798** outgoing hold-sites — a lock held at a call site that reaches
-  `IBinder.transact` — spread across ~130 distinct locks.
-- **161** incoming server entries that take a lock a remote caller can block on.
-- **4** high-risk incoming entries — they hold a lock *across their own* outgoing
-  transaction (the nested pattern that genuinely deadlocks across processes).
 
-Generated AIDL proxies (`$Stub$Proxy`, which `synchronized(this)` to cache an
-interface hash), alloc-site / unresolved monitors, and compiler synthetics are
-excluded as noise — only shared lock identities in real service code remain.
+## Outgoing — a lock held across a transaction to another process
 
----
+Each holds the named lock while the call path reaches an outgoing Binder transaction. If the remote process blocks (or calls back into `system_server` and needs a lock), the held lock is pinned for the duration of the round-trip.
 
-## What it finds — outgoing (a lock held across an outgoing transaction)
 
-Ranked by how often each lock is held across IPC. The global `system_server`
-locks dominate, exactly as expected:
+### O1. `BatteryService$2.onChange` holds `BatteryService.mLock` across an IPC
 
-| held across N IPCs | lock |
-|---|---|
-| 220 | `ActivityTaskManagerService.mGlobalLock` |
-| 56 | `ActivityManagerService` (the AMS instance monitor) |
-| 43 | `ActivityManagerService.mProcLock` |
-| 27 | `AccessibilityManagerService.mLock` |
-| 24 | `ActivityManagerService$LocalService` (outer-instance monitor) |
-| 21 | `WallpaperManagerService.mLock` |
-| 19 | `VibratorManagerService.mLock` |
-| 18 | `ImfLock.class` (inputmethod) |
-| 17 | `NotificationManagerService.mNotificationLock` |
+At `onChange` (line 508) the lock(s) `BatteryService.mLock` are held; the path reaches an outgoing Binder transaction via `BatteryService.-$$Nest$mupdateBatteryWarningLevelLocked`. The lock is pinned for the whole cross-process round-trip.
 
-### Example — `ActivityTaskManagerService.mGlobalLock` across a client callback
 
-![](binder-findings/atms-mGlobalLock-activityDestroyed.svg)
+![](findings/binder/out01.svg)
 
-`ActivityClientController.activityDestroyed` holds the WM global lock and, still
-holding it, calls into `ActivityRecord.destroyed` which dispatches further — a
-chain that reaches an outgoing Binder transaction with `mGlobalLock` pinned the
-whole time:
 
-```text
-  frameworks/base/.../server/wm/ActivityClientController.java:316
-      314      final ActivityRecord r = ActivityRecord.forTokenLocked(token);
-      315      if (r != null) {
-  >>  316          r.destroyed("activityDestroyed");
-      317      }
-```
+### O2. `BatteryService.onBootPhase` holds `BatteryService.mLock` across an IPC
 
-The diagram shows the held lock (red) → the call path → the **Binder IPC** node;
-every one of the 220 `mGlobalLock` sites has its own. This is the single most
-load-bearing lock in `system_server`, so each place it is pinned across IPC is a
-latency cliff for whatever process is on the other end.
+At `onBootPhase` (line 516) the lock(s) `BatteryService.mLock` are held; the path reaches an outgoing Binder transaction via `BatteryService.updateBatteryWarningLevelLocked`. The lock is pinned for the whole cross-process round-trip.
 
-The full ranked report (every lock, every site, each with a call-path diagram and
-source) is what `lockdex binder <input> --src-root <aosp> --out-dir <dir>` writes;
-`--class ActivityManagerService` or `--lock mProcLock` narrows it to one service or
-lock and emits the complete set of images for it.
 
----
+![](findings/binder/out02.svg)
 
-## 50 representative hold-sites
 
-Across the top locks — holder, source line, and the local call that leads to the
-transaction. Each has a call-path diagram in the `--out-dir` output.
+### O3. `BatteryService.update` holds `BatteryService.mLock` across an IPC
 
-| held lock | held across N IPCs | example holder (file line) | via |
-|---|---|---|---|
-| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityDestroyed`:316 | `ActivityRecord.destroyed` |
-| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityPaused`:246 | `ActivityRecord.activityPaused` |
-| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityRelaunched`:343 | `ActivityRecord.finishRelaunching` |
-| `ActivityTaskManagerService.mGlobalLock` | 220 | `ActivityClientController.activityStopped`:279 | `ActivityRecord.setState` |
-| `am.ActivityManagerService` | 56 | `ActivityManagerService.attachApplication`:4926 | `ActivityManagerService.attachApplicationLocked` |
-| `am.ActivityManagerService` | 56 | `ActivityManagerService.batterySendBroadcast`:2815 | `ActivityManagerService.broadcastIntentLocked` |
-| `am.ActivityManagerService` | 56 | `ActivityManagerService.bindBackupAgent`:14240 | `ActivityManagerService.startProcessLocked` |
-| `am.ActivityManagerService` | 56 | `ActivityManagerService.bindServiceInstance`:14045 | `ActiveServices.bindServiceLocked` |
-| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist`:16978 | `ActivityManagerService.setUidTempAllowlistStateLSP` |
-| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService.attachApplicationLocked`:4680 | `ActivityManagerService.clearProcessForegroundLocked` |
-| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService.cleanUpApplicationRecordLocked`:13573 | `ActivityManagerService.removeLruProcessLocked` |
-| `ActivityManagerService.mProcLock` | 43 | `ActivityManagerService.cleanUpApplicationRecordLocked`:13579 | `ProcessRecord.onCleanupApplicationRecordLSP` |
-| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$1.onReceive`:1162 | `AccessibilityManagerService.restoreEnabledAccessibilityServicesLocked` |
-| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$1.onReceive`:1168 | `AccessibilityManagerService.-$$Nest$mrestoreLegacyDisplayMagnificationNavBarIfNeededLocked` |
-| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$AccessibilityContentObserver.onChange`:6129 | `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked` |
-| `AccessibilityManagerService.mLock` | 27 | `AccessibilityManagerService$AccessibilityContentObserver.onChange`:6133 | `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked` |
-| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastCloseSystemDialogs`:17687 | `ActivityManagerService.broadcastIntentLocked` |
-| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged`:17621 | `ActivityManagerService.broadcastIntentLocked` |
-| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged`:17639 | `ActivityManagerService.broadcastIntentLocked` |
-| `ActivityManagerService$LocalService.this$0` | 24 | `ActivityManagerService$LocalService.broadcastGlobalConfigurationChanged`:17655 | `ActivityManagerService.broadcastIntentLocked` |
-| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperConnection.lambda$new$5`:1120 | `WallpaperManagerService.-$$Nest$mclearWallpaperLocked` |
-| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperObserver.updateWallpapers`:334 | `WallpaperManagerService.-$$Nest$mloadSettingsLocked` |
-| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperObserver.updateWallpapers`:371 | `WallpaperManagerService.bindWallpaperDescriptionLocked` |
-| `WallpaperManagerService.mLock` | 21 | `WallpaperManagerService$WallpaperObserver.updateWallpapers`:374 | `WallpaperManagerService.bindWallpaperComponentLocked` |
-| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$1.onReceive`:213 | `VibratorManagerService.-$$Nest$mmaybeClearCurrentAndNextSessionsLocked` |
-| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$1.onReceive`:220 | `VibratorManagerService.-$$Nest$mmaybeClearCurrentAndNextSessionsLocked` |
-| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$2.onOpChanged`:237 | `VibratorManagerService.-$$Nest$mmaybeClearCurrentAndNextSessionsLocked` |
-| `VibratorManagerService.mLock` | 19 | `VibratorManagerService$ExternalVibrationCallbacks.onExternalVibrationReleased`:1965 | `VibratorManagerService.-$$Nest$mmaybeStartNextSessionLocked` |
-| `ImfLock.class` | 18 | `InputMethodBindingController$2.onBindingDied`:385 | `InputMethodBindingController.unbindCurrentMethod` |
-| `ImfLock.class` | 18 | `InputMethodBindingController$2.onServiceConnected`:397 | `InputMethodBindingController.unbindCurrentMethod` |
-| `ImfLock.class` | 18 | `InputMethodManagerService$Lifecycle.lambda$onUserStarting$1`:1097 | `InputMethodManagerService.onUserReadyLocked` |
-| `ImfLock.class` | 18 | `InputMethodManagerService$LocalServiceImpl.onSwitchKeyboardLayoutShortcut`:5844 | `InputMethodManagerService.-$$Nest$mswitchKeyboardLayoutLocked` |
-| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$3.onReceive`:1709 | `NotificationAttentionHelper.updateLightsLocked` |
-| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$3.onReceive`:1715 | `NotificationAttentionHelper.updateLightsLocked` |
-| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$3.onReceive`:1721 | `NotificationAttentionHelper.updateLightsLocked` |
-| `NotificationManagerService.mNotificationLock` | 17 | `NotificationAttentionHelper$SettingsObserver.onChange`:1787 | `NotificationAttentionHelper.updateLightsLocked` |
-| `VpnManagerService.mVpns` | 15 | `VpnManagerService.deleteVpnProfile`:340 | `Vpn.deleteVpnProfile` |
-| `VpnManagerService.mVpns` | 15 | `VpnManagerService.factoryReset`:984 | `VpnManagerService.setAlwaysOnVpnPackage` |
-| `VpnManagerService.mVpns` | 15 | `VpnManagerService.factoryReset`:994 | `VpnManagerService.setLockdownTracker` |
-| `VpnManagerService.mVpns` | 15 | `VpnManagerService.factoryReset`:1004 | `VpnManagerService.prepareVpn` |
-| `AppRestrictionController.mLock` | 15 | `AppBatteryTracker.dump`:859 | `AppRestrictionController.getUidBatteryExemptedUsageSince` |
-| `AppRestrictionController.mLock` | 15 | `AppBatteryTracker.updateBatteryUsageStatsAndCheck`:429 | `AppBatteryTracker.scheduleBatteryUsageStatsUpdateIfNecessary` |
-| `AppRestrictionController.mLock` | 15 | `AppFGSTracker.handleForegroundServicesChanged`:473 | `AppFGSTracker$PackageDurations.setForegroundServiceType` |
-| `AppRestrictionController.mLock` | 15 | `AppFGSTracker.handleForegroundServicesChanged`:243 | `AppFGSTracker$PackageDurations.addEvent` |
-| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.create`:460 | `BatteryStatsImpl.readLocked` |
-| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.doEnableOrDisable`:3062 | `BatteryStatsImpl.setPretendScreenOff` |
-| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.dumpUnmonitored`:3167 | `BatteryStatsImpl.resetAllStatsAndHistoryLocked` |
-| `BatteryStatsService.mStats` | 15 | `BatteryStatsService.dumpUnmonitored`:3176 | `BatteryStatsImpl.resetAllStatsAndHistoryLocked` |
-| `ProcessList.mService` | 14 | `ProcessErrorStateRecord.appNotResponding`:682 | `ProcessRecordInternal.killLocked` |
-| `ProcessList.mService` | 14 | `ProcessErrorStateRecord.appNotResponding`:685 | `ProcessRecordInternal.killLocked` |
+At `update` (line 716) the lock(s) `BatteryService.mLock` are held; the path reaches an outgoing Binder transaction via `BatteryService.processValuesLocked`. The lock is pinned for the whole cross-process round-trip.
 
----
 
-## High-risk — incoming entries that hold a lock across their own outgoing call
+![](findings/binder/out03.svg)
 
-These four are the dangerous case: a method a remote process can invoke acquires a
-lock and *then itself* calls out over Binder while holding it. If the downstream
-process calls back into a path that needs the same lock, the two processes
-deadlock — and neither side can see the cycle from its own code.
 
-![](binder-findings/high-bugreport-binderDied.svg)
+### O4. `ConsumerIrService.getCarrierFrequencies` holds `ConsumerIrService.mHalLock` across an IPC
 
-All four are in `BugreportManagerServiceImpl`, holding `mLock` across an outgoing
-call:
+At `getCarrierFrequencies` (line 146) the lock(s) `ConsumerIrService.mHalLock` are held; the path reaches an outgoing Binder transaction via `IConsumerIr$Stub$Proxy.getCarrierFreqs`. The lock is pinned for the whole cross-process round-trip.
 
-1. `BugreportManagerServiceImpl$DumpstateListener.binderDied` — `mLock`,
-   `Slogf.sMessageBuilder`
-2. `BugreportManagerServiceImpl.preDumpUiData` — `mLock`
-3. `BugreportManagerServiceImpl.retrieveBugreport` — `mLock`,
-   `BugreportFileManager.mLock`, `WatchableImpl.mObservers`
-4. `BugreportManagerServiceImpl.startBugreport` — same set
 
-`binderDied` is itself a Binder callback (a death-recipient), so it runs on a
-Binder thread holding `mLock` while it reaches another transaction — the kind of
-nested cross-process hold worth a second look during review.
+![](findings/binder/out04.svg)
 
----
 
-## How to read a finding
+### O5. `ConsumerIrService.transmit` holds `ConsumerIrService.mHalLock` across an IPC
 
-A reported site is a real bytecode fact: at this instruction the lock is on the
-monitor stack (or a `j.u.c` lock is held), and the call made here transitively
-reaches `IBinder.transact`. The lock is therefore held for the entire duration of
-the cross-process call.
+At `transmit` (line 122) the lock(s) `ConsumerIrService.mHalLock` are held; the path reaches an outgoing Binder transaction via `IConsumerIr$Stub$Proxy.transmit`. The lock is pinned for the whole cross-process round-trip.
 
-What the tool does *not* decide is whether a given hold is a bug — many are
-deliberate and safe (the callee is a fast `oneway`, or the protocol guarantees the
-peer never re-enters). It is a ranked, source-anchored worklist: start at the
-locks held across the most transactions, and at the four high-risk entries.
 
-## Caveats
+![](findings/binder/out05.svg)
 
-- The call graph over-approximates at megamorphic sites, so a held lock can be
-  attributed to a transaction it does not actually reach at runtime.
-- `oneway` vs two-way transactions are not yet distinguished; a `oneway` hold is
-  lower risk (fire-and-forget) than a blocking one.
-- Locks reached only through unresolved values are dropped, so this under-reports
-  rather than inventing hazards.
+
+### O6. `DeviceIdleController.addPowerSaveTempWhitelistAppDirectInternal` holds `server.DeviceIdleController` across an IPC
+
+At `addPowerSaveTempWhitelistAppDirectInternal` (line 3308) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `DeviceIdleController.updateTempWhitelistAppIdsLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out06.svg)
+
+
+### O7. `DeviceIdleController.addPowerSaveTempWhitelistAppDirectInternal` holds `server.DeviceIdleController` across an IPC
+
+At `addPowerSaveTempWhitelistAppDirectInternal` (line 3324) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `ActivityManagerService$LocalService.updateDeviceIdleTempAllowlist`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out07.svg)
+
+
+### O8. `DeviceIdleController.checkTempAppWhitelistTimeout` holds `server.DeviceIdleController` across an IPC
+
+At `checkTempAppWhitelistTimeout` (line 3385) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `DeviceIdleController.onAppRemovedFromTempWhitelistLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out08.svg)
+
+
+### O9. `DeviceIdleController.removePowerSaveTempWhitelistAppDirectInternal` holds `server.DeviceIdleController` across an IPC
+
+At `removePowerSaveTempWhitelistAppDirectInternal` (line 3357) the lock(s) `server.DeviceIdleController` are held; the path reaches an outgoing Binder transaction via `DeviceIdleController.onAppRemovedFromTempWhitelistLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out09.svg)
+
+
+### O10. `StorageManagerService.mountProxyFileDescriptorBridge` holds `StorageManagerService.mAppFuseLock` across an IPC
+
+At `mountProxyFileDescriptorBridge` (line 3717) the lock(s) `StorageManagerService.mAppFuseLock` are held; the path reaches an outgoing Binder transaction via `AppFuseBridge.addBridge`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out10.svg)
+
+
+### O11. `StorageManagerService.openProxyFileDescriptor` holds `StorageManagerService.mAppFuseLock` across an IPC
+
+At `openProxyFileDescriptor` (line 3748) the lock(s) `StorageManagerService.mAppFuseLock` are held; the path reaches an outgoing Binder transaction via `AppFuseBridge.openFile`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out11.svg)
+
+
+### O12. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+
+At `runSmartIdleMaint` (line 2938) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `IVold$Stub$Proxy.getWriteAmount`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out12.svg)
+
+
+### O13. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+
+At `runSmartIdleMaint` (line 2948) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `StorageManagerService.needsCheckpoint`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out13.svg)
+
+
+### O14. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+
+At `runSmartIdleMaint` (line 2949) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `StorageManagerService.refreshLifetimeConstraint`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out14.svg)
+
+
+### O15. `StorageManagerService.runSmartIdleMaint` holds `server.StorageManagerService` across an IPC
+
+At `runSmartIdleMaint` (line 2964) the lock(s) `server.StorageManagerService` are held; the path reaches an outgoing Binder transaction via `IVold$Stub$Proxy.setGCUrgentPace`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out15.svg)
+
+
+### O16. `VpnManagerService.deleteVpnProfile` holds `VpnManagerService.mVpns` across an IPC
+
+At `deleteVpnProfile` (line 340) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.deleteVpnProfile`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out16.svg)
+
+
+### O17. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+
+At `factoryReset` (line 984) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setAlwaysOnVpnPackage`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out17.svg)
+
+
+### O18. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+
+At `factoryReset` (line 994) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out18.svg)
+
+
+### O19. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+
+At `factoryReset` (line 1004) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.prepareVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out19.svg)
+
+
+### O20. `VpnManagerService.factoryReset` holds `VpnManagerService.mVpns` across an IPC
+
+At `factoryReset` (line 1011) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.prepareVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out20.svg)
+
+
+### O21. `VpnManagerService.onPackageRemoved` holds `VpnManagerService.mVpns` across an IPC
+
+At `onPackageRemoved` (line 892) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.setAlwaysOnPackage`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out21.svg)
+
+
+### O22. `VpnManagerService.onPackageRemoved` holds `VpnManagerService.mVpns` across an IPC
+
+At `onPackageRemoved` (line 897) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.deleteVpnProfileDueToAppRemoval`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out22.svg)
+
+
+### O23. `VpnManagerService.onPackageReplaced` holds `VpnManagerService.mVpns` across an IPC
+
+At `onPackageReplaced` (line 871) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out23.svg)
+
+
+### O24. `VpnManagerService.onUserStarted` holds `VpnManagerService.mVpns` across an IPC
+
+At `onUserStarted` (line 798) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService$Dependencies.createVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out24.svg)
+
+
+### O25. `VpnManagerService.onUserStarted` holds `VpnManagerService.mVpns` across an IPC
+
+At `onUserStarted` (line 802) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.updateLockdownVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out25.svg)
+
+
+### O26. `VpnManagerService.onUserUnlocked` holds `VpnManagerService.mVpns` across an IPC
+
+At `onUserUnlocked` (line 924) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.updateLockdownVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out26.svg)
+
+
+### O27. `VpnManagerService.onUserUnlocked` holds `VpnManagerService.mVpns` across an IPC
+
+At `onUserUnlocked` (line 926) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out27.svg)
+
+
+### O28. `VpnManagerService.onVpnLockdownReset` holds `VpnManagerService.mVpns` across an IPC
+
+At `onVpnLockdownReset` (line 933) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `LockdownVpnTracker.reset`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out28.svg)
+
+
+### O29. `VpnManagerService.prepareVpn` holds `VpnManagerService.mVpns` across an IPC
+
+At `prepareVpn` (line 229) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.prepare`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out29.svg)
+
+
+### O30. `VpnManagerService.setAlwaysOnVpnPackage` holds `VpnManagerService.mVpns` across an IPC
+
+At `setAlwaysOnVpnPackage` (line 612) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.setAlwaysOnPackage`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out30.svg)
+
+
+### O31. `VpnManagerService.setAlwaysOnVpnPackage` holds `VpnManagerService.mVpns` across an IPC
+
+At `setAlwaysOnVpnPackage` (line 615) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out31.svg)
+
+
+### O32. `VpnManagerService.setAlwaysOnVpnPackage` holds `VpnManagerService.mVpns` across an IPC
+
+At `setAlwaysOnVpnPackage` (line 616) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.setAlwaysOnPackage`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out32.svg)
+
+
+### O33. `VpnManagerService.startAlwaysOnVpn` holds `VpnManagerService.mVpns` across an IPC
+
+At `startAlwaysOnVpn` (line 576) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startAlwaysOnVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out33.svg)
+
+
+### O34. `VpnManagerService.startLegacyVpn` holds `VpnManagerService.mVpns` across an IPC
+
+At `startLegacyVpn` (line 439) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startLegacyVpn`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out34.svg)
+
+
+### O35. `VpnManagerService.startVpnProfile` holds `VpnManagerService.mVpns` across an IPC
+
+At `startVpnProfile` (line 381) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.startVpnProfile`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out35.svg)
+
+
+### O36. `VpnManagerService.stopVpnProfile` holds `VpnManagerService.mVpns` across an IPC
+
+At `stopVpnProfile` (line 399) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `Vpn.stopVpnProfile`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out36.svg)
+
+
+### O37. `VpnManagerService.updateLockdownVpn` holds `VpnManagerService.mVpns` across an IPC
+
+At `updateLockdownVpn` (line 495) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out37.svg)
+
+
+### O38. `VpnManagerService.updateLockdownVpn` holds `VpnManagerService.mVpns` across an IPC
+
+At `updateLockdownVpn` (line 509) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out38.svg)
+
+
+### O39. `VpnManagerService.updateLockdownVpn` holds `VpnManagerService.mVpns` across an IPC
+
+At `updateLockdownVpn` (line 518) the lock(s) `VpnManagerService.mVpns` are held; the path reaches an outgoing Binder transaction via `VpnManagerService.setLockdownTracker`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out39.svg)
+
+
+### O40. `AbstractAccessibilityServiceConnection.getWindow` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+
+At `getWindow` (line 645) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AbstractAccessibilityServiceConnection.ensureWindowsAvailableTimedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out40.svg)
+
+
+### O41. `AbstractAccessibilityServiceConnection.getWindows` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+
+At `getWindows` (line 613) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AbstractAccessibilityServiceConnection.ensureWindowsAvailableTimedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out41.svg)
+
+
+### O42. `AbstractAccessibilityServiceConnection.setCacheEnabled` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+
+At `setCacheEnabled` (line 2655) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.onClientChangeLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out42.svg)
+
+
+### O43. `AbstractAccessibilityServiceConnection.setServiceInfo` holds `AbstractAccessibilityServiceConnection.mLock` across an IPC
+
+At `setServiceInfo` (line 547) the lock(s) `AbstractAccessibilityServiceConnection.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.onClientChangeLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out43.svg)
+
+
+### O44. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6129) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out44.svg)
+
+
+### O45. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6133) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out45.svg)
+
+
+### O46. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6138) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out46.svg)
+
+
+### O47. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6142) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out47.svg)
+
+
+### O48. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6149) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out48.svg)
+
+
+### O49. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6153) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out49.svg)
+
+
+### O50. `AccessibilityManagerService$AccessibilityContentObserver.onChange` holds `AccessibilityManagerService.mLock` across an IPC
+
+At `onChange` (line 6157) the lock(s) `AccessibilityManagerService.mLock` are held; the path reaches an outgoing Binder transaction via `AccessibilityManagerService.-$$Nest$monUserStateChangedLocked`. The lock is pinned for the whole cross-process round-trip.
+
+
+![](findings/binder/out50.svg)
+
+
+## Incoming — a binder entry that acquires locks a remote caller blocks on
+
+Each is a Binder entry point (a `Stub` method, a `binderDied`, a oneway callback) that takes the listed locks. A remote process blocks on those locks for the duration of the call. **HIGH** marks an entry that *also* holds one of them across its own outgoing transaction — so a remote caller can pin a `system_server` lock across a second IPC.
+
+
+### I1. `BugreportManagerServiceImpl$DumpstateListener.binderDied` — **HIGH** (also held across its own outgoing transaction)
+
+This binder entry acquires `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+
+
+![](findings/binder/in01.svg)
+
+
+### I2. `BugreportManagerServiceImpl.cancelBugreport` — **HIGH** (also held across its own outgoing transaction)
+
+This binder entry acquires `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+
+
+![](findings/binder/in02.svg)
+
+
+### I3. `BugreportManagerServiceImpl.preDumpUiData` — **HIGH** (also held across its own outgoing transaction)
+
+This binder entry acquires `BugreportManagerServiceImpl.mLock`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+
+
+![](findings/binder/in03.svg)
+
+
+### I4. `BugreportManagerServiceImpl.retrieveBugreport` — **HIGH** (also held across its own outgoing transaction)
+
+This binder entry acquires `BugreportManagerServiceImpl$BugreportFileManager.mLock`, `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+
+
+![](findings/binder/in04.svg)
+
+
+### I5. `BugreportManagerServiceImpl.startBugreport` — **HIGH** (also held across its own outgoing transaction)
+
+This binder entry acquires `BugreportManagerServiceImpl$BugreportFileManager.mLock`, `BugreportManagerServiceImpl.mLock`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+
+
+![](findings/binder/in05.svg)
+
+
+### I6. `VibratorControlService.triggerVibrationParamsRequest` — **HIGH** (also held across its own outgoing transaction)
+
+This binder entry acquires `VibratorControlService.mLock`; a remote caller blocks on them. It additionally holds a lock across an outgoing Binder transaction of its own — a remote caller can stall a `system_server` lock across a second cross-process call.
+
+
+![](findings/binder/in06.svg)
+
+
+### I7. `BatteryService$BinderService.dump`
+
+This binder entry acquires `BatteryService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in07.svg)
+
+
+### I8. `DiskStatsService.dump`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in08.svg)
+
+
+### I9. `DiskStatsService.reportCachedValues`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in09.svg)
+
+
+### I10. `DiskStatsService.reportDiskWriteSpeed`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in10.svg)
+
+
+### I11. `DiskStatsService.reportFreeSpace`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in11.svg)
+
+
+### I12. `DockObserver$BinderService.dump`
+
+This binder entry acquires `DockObserver.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in12.svg)
+
+
+### I13. `DynamicSystemService$GsiServiceCallback.onResult`
+
+This binder entry acquires `this`; a remote caller blocks on them.
+
+
+![](findings/binder/in13.svg)
+
+
+### I14. `LooperStatsService.dump`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in14.svg)
+
+
+### I15. `RuntimeService.dump`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in15.svg)
+
+
+### I16. `StorageManagerService$10.onStatus`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in16.svg)
+
+
+### I17. `StorageManagerService$13.onStatus`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in17.svg)
+
+
+### I18. `StorageManagerService$3.onDiskCreated`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in18.svg)
+
+
+### I19. `StorageManagerService$3.onDiskDestroyed`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in19.svg)
+
+
+### I20. `StorageManagerService$3.onDiskMetadataChanged`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in20.svg)
+
+
+### I21. `StorageManagerService$3.onDiskScanned`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in21.svg)
+
+
+### I22. `StorageManagerService$3.onVolumeCreated`
+
+This binder entry acquires `StorageManagerService.mLock`, `UserController.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in22.svg)
+
+
+### I23. `StorageManagerService$3.onVolumeDestroyed`
+
+This binder entry acquires `StorageManagerService.mLock`, `StorageSessionController.mLock`, `StorageUserConnection.mSessionsLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in23.svg)
+
+
+### I24. `StorageManagerService$3.onVolumeInternalPathChanged`
+
+This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in24.svg)
+
+
+### I25. `StorageManagerService$3.onVolumeMetadataChanged`
+
+This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in25.svg)
+
+
+### I26. `StorageManagerService$3.onVolumePathChanged`
+
+This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in26.svg)
+
+
+### I27. `StorageManagerService$3.onVolumeStateChanged`
+
+This binder entry acquires `StorageManagerService.mLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in27.svg)
+
+
+### I28. `StorageManagerService$8.onVolumeChecking`
+
+This binder entry acquires `StorageSessionController.mLock`, `StorageUserConnection$ActiveConnection.mLock`, `StorageUserConnection.mSessionsLock`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in28.svg)
+
+
+### I29. `StorageManagerService$9.onFinished`
+
+This binder entry acquires `StorageManagerService.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in29.svg)
+
+
+### I30. `SystemServer$SystemServerDumper.addDumpable`
+
+This binder entry acquires `SystemServer$SystemServerDumper.mDumpables`; a remote caller blocks on them.
+
+
+![](findings/binder/in30.svg)
+
+
+### I31. `SystemServer$SystemServerDumper.dump`
+
+This binder entry acquires `SystemServer$SystemServerDumper.mDumpables`; a remote caller blocks on them.
+
+
+![](findings/binder/in31.svg)
+
+
+### I32. `ActivityManagerService$CacheBinder.dump`
+
+This binder entry acquires `ActivityManagerService.mProcLock`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `am.PackageList`, `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in32.svg)
+
+
+### I33. `ActivityManagerService$DbBinder.dump`
+
+This binder entry acquires `ActivityManagerService.mProcLock`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `am.PackageList`, `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in33.svg)
+
+
+### I34. `ActivityManagerService$GraphicsBinder.dump`
+
+This binder entry acquires `ActivityManagerService.mProcLock`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `am.PackageList`, `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in34.svg)
+
+
+### I35. `ActivityManagerService$IntentCreatorToken.completeFinalize`
+
+This binder entry acquires `ActivityManagerService.sIntentCreatorTokenCache`, `WatchableImpl.mObservers`; a remote caller blocks on them.
+
+
+![](findings/binder/in35.svg)
+
+
+### I36. `ActivityManagerService$MemBinder.dump`
+
+This binder entry acquires `Clock.SYSTEM_CLOCK`, `ProtoLogImpl_842414855.class`, `ActiveServices.mAm`, `ActivityManagerConstants.mProcStateDebugUids`, `ActivityManagerService$1.this$0`, `ActivityManagerService.mCompanionAppUidsMap`, `ActivityManagerService.mDeliveryGroupPolicyIgnoredActions`, `ActivityManagerService.mOomAdjObserverLock`, `ActivityManagerService.mPidsSelfLocked`, `ActivityManagerService.mProcLock`, `ActivityManagerService.mProfileOwnerUids`, `ActivityManagerService.sActiveProcessInfoSelfLocked`, `AppErrors.mBadProcessLock`, `AppExitInfoTracker.mLock`, `AppProfiler.mProcessCpuTracker`, `AppProfiler.mProfilerLock`, `AppRestrictionController.mCarrierPrivilegedLock`, `AppRestrictionController.mLock`, `AppRestrictionController.mSettingsLock`, `AppRestrictionController.mSystemModulesCache`, `AppStartInfoTracker.mLock`, `am.BoundServiceSession`, `BroadcastController.mStickyBroadcasts`, `BroadcastQueueImpl.mBgConstants`, `BroadcastQueueImpl.mFgConstants`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `CachedAppOptimizer.mPhenotypeFlagLock`, `ComponentAliasResolver.mLock`, `ContentProviderConnection.mLock`, `FgsTempAllowList.mLock`, `LmkdConnection.mLmkdOutputStreamLock`, `LmkdConnection.mLmkdSocketLock`, `LmkdConnection.mReplyBufLock`, `am.PackageList`, `PendingIntentController.mLock`, `PendingTempAllowlists.mPendingTempAllowlist`, `PhantomProcessList.mLock`, `ProcessStatsService.mLock`, `ProviderMap.mAm`, `ServiceRecord$StartItem.uriPermissions`, `UidObserverController.mLock`, `UserController.mLock`, `GameManagerService$GamePackageConfiguration.mModeConfigLock`, `GameManagerService.mDeviceConfigLock`, `GameManagerService.mLock`, `GenericWindowPolicyController.mGenericWindowPolicyControllerLock`, `ImeTrackerService.mLock`, `ImfLock.class`, `UserDataRepository.mMutationLock`, `UserManagerService.mRestrictionsLock`, `UserManagerService.mUsersLock`, `WakeGestureListener.mLock`, `stats.BatteryExternalStatsWorker`, `stats.BatteryStatsImpl`, `BatteryStatsImpl.mPowerStatsUidResolver`, `PowerStatsCollector.mClock`, `PowerStatsStore.mFileLock`, `PowerStatsExporter.mPowerStatsAggregator`, `PowerStatsService.mInjector`, `UriGrantsManagerService.mLock`, `AnrTimer.mLock`, `AnrTimer.sAnrTimerList`, `AnrTimer.sErrors`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`, `AccessibilityWindowsPopulator.mLock`, `ActivityRecord.uriPermissions`, `ActivityTaskManagerService.mGlobalLock`, `wm.BackgroundLaunchProcessController`, `HighRefreshRateDenylist.mLock`, `wm.MirrorActiveUids`, `PackageConfigPersister.mLock`, `SnapshotCache.mLock`, `SnapshotPersistQueue.mLock`, `VisibleActivityProcessTracker.mProcMap`, `WindowOrientationListener.mLock`, `WindowProcessController.mPkgList`, `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in36.svg)
+
+
+### I37. `AppProfiler$CpuBinder.dump`
+
+This binder entry acquires `Clock.SYSTEM_CLOCK`, `ProtoLogImpl_842414855.class`, `ActiveServices.mAm`, `ActivityManagerConstants.mProcStateDebugUids`, `ActivityManagerService$1.this$0`, `ActivityManagerService.mCompanionAppUidsMap`, `ActivityManagerService.mDeliveryGroupPolicyIgnoredActions`, `ActivityManagerService.mOomAdjObserverLock`, `ActivityManagerService.mPidsSelfLocked`, `ActivityManagerService.mProcLock`, `ActivityManagerService.mProfileOwnerUids`, `ActivityManagerService.sActiveProcessInfoSelfLocked`, `AppErrors.mBadProcessLock`, `AppExitInfoTracker.mLock`, `AppProfiler.mProcessCpuTracker`, `AppProfiler.mProfilerLock`, `AppRestrictionController.mCarrierPrivilegedLock`, `AppRestrictionController.mLock`, `AppRestrictionController.mSettingsLock`, `AppRestrictionController.mSystemModulesCache`, `AppStartInfoTracker.mLock`, `am.BoundServiceSession`, `BroadcastController.mStickyBroadcasts`, `BroadcastQueueImpl.mBgConstants`, `BroadcastQueueImpl.mFgConstants`, `am.CachedAppOptimizer`, `CachedAppOptimizer.mAm`, `CachedAppOptimizer.mPhenotypeFlagLock`, `ComponentAliasResolver.mLock`, `ContentProviderConnection.mLock`, `FgsTempAllowList.mLock`, `LmkdConnection.mLmkdOutputStreamLock`, `LmkdConnection.mLmkdSocketLock`, `LmkdConnection.mReplyBufLock`, `am.PackageList`, `PendingIntentController.mLock`, `PendingTempAllowlists.mPendingTempAllowlist`, `PhantomProcessList.mLock`, `ProcessStatsService.mLock`, `ProviderMap.mAm`, `ServiceRecord$StartItem.uriPermissions`, `UidObserverController.mLock`, `UserController.mLock`, `GameManagerService$GamePackageConfiguration.mModeConfigLock`, `GameManagerService.mDeviceConfigLock`, `GameManagerService.mLock`, `GenericWindowPolicyController.mGenericWindowPolicyControllerLock`, `ImeTrackerService.mLock`, `ImfLock.class`, `UserDataRepository.mMutationLock`, `UserManagerService.mRestrictionsLock`, `UserManagerService.mUsersLock`, `WakeGestureListener.mLock`, `stats.BatteryExternalStatsWorker`, `stats.BatteryStatsImpl`, `BatteryStatsImpl.mPowerStatsUidResolver`, `PowerStatsCollector.mClock`, `PowerStatsStore.mFileLock`, `PowerStatsExporter.mPowerStatsAggregator`, `PowerStatsService.mInjector`, `UriGrantsManagerService.mLock`, `AnrTimer.mLock`, `AnrTimer.sAnrTimerList`, `AnrTimer.sErrors`, `Slogf.sMessageBuilder`, `WatchableImpl.mObservers`, `AccessibilityWindowsPopulator.mLock`, `ActivityRecord.uriPermissions`, `ActivityTaskManagerService.mGlobalLock`, `wm.BackgroundLaunchProcessController`, `HighRefreshRateDenylist.mLock`, `wm.MirrorActiveUids`, `PackageConfigPersister.mLock`, `SnapshotCache.mLock`, `SnapshotPersistQueue.mLock`, `VisibleActivityProcessTracker.mProcMap`, `WindowOrientationListener.mLock`, `WindowProcessController.mPkgList`, `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in37.svg)
+
+
+### I38. `BroadcastRecord.dump`
+
+This binder entry acquires `PrintWriter.lock`; a remote caller blocks on them.
+
+
+![](findings/binder/in38.svg)
+
+
+### I39. `ContentProviderConnection.adjustCounts`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in39.svg)
+
+
+### I40. `ContentProviderConnection.decrementCount`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in40.svg)
+
+
+### I41. `ContentProviderConnection.incrementCount`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in41.svg)
+
+
+### I42. `ContentProviderConnection.initializeCount`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in42.svg)
+
+
+### I43. `ContentProviderConnection.stableCount`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in43.svg)
+
+
+### I44. `ContentProviderConnection.startAssociationIfNeeded`
+
+This binder entry acquires `ContentProviderConnection.mProcStatsLock`, `am.PackageList`; a remote caller blocks on them.
+
+
+![](findings/binder/in44.svg)
+
+
+### I45. `ContentProviderConnection.stopAssociation`
+
+This binder entry acquires `ContentProviderConnection.mProcStatsLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in45.svg)
+
+
+### I46. `ContentProviderConnection.toClientString`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in46.svg)
+
+
+### I47. `ContentProviderConnection.toClientString`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in47.svg)
+
+
+### I48. `ContentProviderConnection.toShortString`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in48.svg)
+
+
+### I49. `ContentProviderConnection.toShortString`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in49.svg)
+
+
+### I50. `ContentProviderConnection.toString`
+
+This binder entry acquires `ContentProviderConnection.mLock`; a remote caller blocks on them.
+
+
+![](findings/binder/in50.svg)
