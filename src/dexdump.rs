@@ -106,6 +106,8 @@ pub fn parse_dexdump_text(text: &str) -> Dex {
     let mut pending_ins: u32 = 0;
     let mut in_positions = false;
     let mut in_interfaces = false;
+    let mut in_catches = false;
+    let mut pending_try: Option<(u32, u32)> = None;
 
     let flush_method = |cur_method: &mut Option<Method>, cur_class: &mut Option<Class>| {
         if let (Some(m), Some(c)) = (cur_method.take(), cur_class.as_mut()) {
@@ -171,10 +173,29 @@ pub fn parse_dexdump_text(text: &str) -> Dex {
         // ---- positions (line table) ----------------------------------------
         if trimmed.starts_with("positions") {
             in_positions = true;
+            in_catches = false;
             continue;
         }
-        if trimmed.starts_with("locals") || trimmed.starts_with("catches") {
+        if trimmed.starts_with("catches") {
             in_positions = false;
+            in_catches = true;
+            pending_try = None;
+            continue;
+        }
+        if trimmed.starts_with("locals") {
+            in_positions = false;
+            in_catches = false;
+            continue;
+        }
+        if in_catches {
+            // "0x0008 - 0x001e" (try range) then "<any> -> 0x0022" (handler).
+            if let Some((s, e)) = parse_try_range(trimmed) {
+                pending_try = Some((s, e));
+            } else if let Some(handler) = parse_handler(trimmed) {
+                if let (Some((s, e)), Some(m)) = (pending_try, cur_method.as_mut()) {
+                    m.catches.push((s, e, handler));
+                }
+            }
             continue;
         }
         if in_positions {
@@ -194,6 +215,7 @@ pub fn parse_dexdump_text(text: &str) -> Dex {
             if let Some(after) = right.strip_prefix('[') {
                 flush_method(&mut cur_method, &mut cur_class);
                 in_positions = false;
+                in_catches = false;
                 if let Some(close) = after.find(']') {
                     let fqn_sig = after[close + 1..].trim();
                     if let Some((class, name, sig)) = split_fqn_sig(fqn_sig) {
@@ -206,6 +228,7 @@ pub fn parse_dexdump_text(text: &str) -> Dex {
                             ins: pending_ins,
                             insns: Vec::new(),
                             positions: Vec::new(),
+                            catches: Vec::new(),
                             source_file: source_file.clone(),
                         });
                     }
@@ -444,6 +467,21 @@ fn parse_position(s: &str) -> Option<(u32, u32)> {
     let off = u32::from_str_radix(off, 16).ok()?;
     let line = it.next()?.strip_prefix("line=")?.parse().ok()?;
     Some((off, line))
+}
+
+/// A try range: "0x0008 - 0x001e" -> (0x0008, 0x001e). Distinguished from a handler
+/// line by the bare `-` separator (a handler uses `->`).
+fn parse_try_range(s: &str) -> Option<(u32, u32)> {
+    let (a, b) = s.split_once(" - ")?;
+    let start = u32::from_str_radix(a.trim().strip_prefix("0x")?, 16).ok()?;
+    let end = u32::from_str_radix(b.trim().strip_prefix("0x")?, 16).ok()?;
+    Some((start, end))
+}
+
+/// A catch handler: "Lcls; -> 0x0022" or "<any> -> 0x0022" -> 0x0022.
+fn parse_handler(s: &str) -> Option<u32> {
+    let (_, h) = s.rsplit_once("-> ")?;
+    u32::from_str_radix(h.trim().strip_prefix("0x")?, 16).ok()
 }
 
 /// Extract the contents of the first single-quoted run: `xxx : 'VALUE'` -> VALUE.

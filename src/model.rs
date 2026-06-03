@@ -108,6 +108,11 @@ pub struct Method {
     pub insns: Vec<Insn>,
     /// (code_offset, source_line) sorted by offset.
     pub positions: Vec<(u32, u32)>,
+    /// exception handlers: `(try_start, try_end, handler)` code offsets, where the
+    /// covered range is `[try_start, try_end)`. An instruction in a try range may
+    /// branch to its handler, so the handler inherits the locks held across the try —
+    /// without this a `catch`/post-`wait()` write looks as if it escaped the monitor.
+    pub catches: Vec<(u32, u32, u32)>,
     pub source_file: Option<String>,
 }
 

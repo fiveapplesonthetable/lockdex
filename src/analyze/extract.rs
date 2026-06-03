@@ -249,7 +249,7 @@ fn held_dataflow(m: &Method, effect: &[Option<Effect>], seed: Vec<Lock>) -> Vec<
         return Vec::new();
     }
     let index: HashMap<u32, usize> = m.insns.iter().enumerate().map(|(i, ins)| (ins.offset, i)).collect();
-    let succ: Vec<Vec<usize>> = (0..n)
+    let mut succ: Vec<Vec<usize>> = (0..n)
         .map(|i| match &m.insns[i].op {
             Op::Return(_) | Op::Throw => Vec::new(),
             Op::Goto(t) => index.get(t).copied().into_iter().collect(),
@@ -264,6 +264,18 @@ fn held_dataflow(m: &Method, effect: &[Option<Effect>], seed: Vec<Lock>) -> Vec<
             _ => Vec::new(),
         })
         .collect();
+    // Exception edges: any instruction in a try range can branch to its handler, so
+    // the handler's held-set is the meet over the try range — a lock held across the
+    // whole `try` is still held in the `catch`.
+    for &(start, end, handler) in &m.catches {
+        let Some(&h) = index.get(&handler) else { continue };
+        for i in 0..n {
+            let off = m.insns[i].offset;
+            if off >= start && off < end && !succ[i].contains(&h) {
+                succ[i].push(h);
+            }
+        }
+    }
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, ss) in succ.iter().enumerate() {
         for &t in ss {
