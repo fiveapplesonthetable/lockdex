@@ -75,7 +75,7 @@ fn guard_names(held: &[Lock], class: &str, key: &str, alias: &HashMap<String, Lo
 /// Locks guaranteed held whenever a method runs, by meet (intersection) over every
 /// caller of `held-at-the-call ∪ must_entry(caller)`. A method with no callers in
 /// the component (a public entry, a thread/Binder root) is unconstrained — `{}`.
-fn must_entry(
+pub(super) fn must_entry(
     by_key: &HashMap<String, Summary>,
     resolved: &HashMap<String, Vec<Vec<String>>>,
     alias: &HashMap<String, Lock>,
@@ -100,11 +100,13 @@ fn must_entry(
         }
     }
 
-    // `None` = ⊤ (not yet constrained). Roots start at `{}` and seed the worklist.
+    // `None` = ⊤ (not yet constrained). A method is a root (held-set `{}`) if it has
+    // no in-component caller OR is externally callable (public/protected) — such a
+    // method can be entered from outside with no lock held, so nothing is guaranteed.
     let mut must: HashMap<String, Option<HashSet<String>>> = HashMap::new();
     let mut work: Vec<String> = Vec::new();
-    for k in by_key.keys() {
-        if has_caller.contains(k) {
+    for (k, s) in by_key {
+        if has_caller.contains(k) && !s.external {
             must.insert(k.clone(), None);
         } else {
             must.insert(k.clone(), Some(HashSet::new()));
@@ -146,11 +148,10 @@ struct Stat {
 /// Reconstruct per-field guards and the accesses that violate them.
 pub(super) fn compute(
     by_key: &HashMap<String, Summary>,
-    resolved: &HashMap<String, Vec<Vec<String>>>,
     alias: &HashMap<String, Lock>,
+    entry: &HashMap<String, HashSet<String>>,
     excluded_fields: &HashSet<String>,
 ) -> RaceReport {
-    let entry = must_entry(by_key, resolved, alias);
 
     // The effective guard set at an access: locks held locally ∪ guaranteed-on-entry.
     let effective = |fa_held: &[Lock], class: &str, key: &str| -> HashSet<String> {

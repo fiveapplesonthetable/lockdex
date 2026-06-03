@@ -91,6 +91,9 @@ struct FieldAccess {
 struct Summary {
     key: String,
     class: String,
+    /// public or protected: callable from outside the analyzed component, so it has
+    /// unknown callers — a root for the must-hold-on-entry analysis.
+    external: bool,
     intra_edges: Vec<Edge>,
     first_acquire: Vec<Lock>,
     acquires: Vec<Lock>,
@@ -303,13 +306,17 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
     let (may, iters) = may_acquire(&by_key, &resolved);
     eprintln!("[lockdex] lock-propagation fixpoint: {} rounds in {:.1}s", iters, tfp.elapsed().as_secs_f64());
 
+    // locks guaranteed held on entry to each method (a meet over its callers); a
+    // callee re-acquiring one of these is reentrant, so it carries no order edge.
+    let must = races::must_entry(&by_key, &resolved, &alias);
+
     // --- edge assembly (parallel per method) ---------------------------------
     let tea = Instant::now();
     let mut asm_keys: Vec<&String> = by_key.keys().collect();
     asm_keys.sort();
     let parts: Vec<MethodParts> = asm_keys
         .par_iter()
-        .map(|k| assemble_one(k, &by_key[*k], &resolved, &may, &capture_map, &alias))
+        .map(|k| assemble_one(k, &by_key[*k], &resolved, &may, &capture_map, &alias, &must))
         .collect();
     let mut edges: Vec<Edge> = Vec::new();
     let mut method_edges: Vec<MethodEdge> = Vec::new();
@@ -368,7 +375,7 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
 
     // --- field-race detection (guard reconstruction) -------------------------
     let tr = Instant::now();
-    let races = races::compute(&by_key, &resolved, &alias, &dex.final_or_volatile_fields);
+    let races = races::compute(&by_key, &alias, &must, &dex.final_or_volatile_fields);
     eprintln!(
         "[lockdex] field races: {} inconsistently-guarded field(s) in {:.1}s",
         races.fields.len(), tr.elapsed().as_secs_f64()
@@ -385,7 +392,11 @@ fn assemble_one(
     may: &HashMap<String, Vec<Lock>>,
     capture_map: &HashMap<String, HashMap<String, Lock>>,
     canon: &HashMap<String, Lock>,
+    must: &HashMap<String, HashSet<String>>,
 ) -> MethodParts {
+    // locks held on every entry to this method, plus whatever it holds locally — a
+    // re-acquisition of any of these is reentrant and imposes no ordering.
+    let entry_held = must.get(k);
     let mut edges: Vec<Edge> = Vec::new();
     let mut method_edges: Vec<MethodEdge> = Vec::new();
     let mut locks: Vec<Lock> = Vec::new();
@@ -395,7 +406,8 @@ fn assemble_one(
         let to = resolve_lock(&e.to, s, capture_map, canon);
         locks.push(from.clone());
         locks.push(to.clone());
-        if from != to && !from.is_opaque() && !to.is_opaque() {
+        let reentrant = entry_held.is_some_and(|e| e.contains(&to.name()));
+        if from != to && !from.is_opaque() && !to.is_opaque() && !reentrant {
             let guard = e.guard.iter().map(|g| resolve_lock(g, s, capture_map, canon)).collect();
             edges.push(Edge { from, to, guard, ..e.clone() });
         }
@@ -421,6 +433,11 @@ fn assemble_one(
                 let Some(sub) = subst_or_self(cl, &call.args) else { continue };
                 let g = resolve_lock(&ground(&sub, &s.class, k), s, capture_map, canon);
                 locks.push(g.clone());
+                // The callee re-acquiring a lock already held — locally or on every
+                // entry to this method — is reentrant, so it imposes no new ordering.
+                if held.iter().any(|h| h == &g) || entry_held.is_some_and(|e| e.contains(&g.name())) {
+                    continue;
+                }
                 for h in &held {
                     if h != &g && !h.is_opaque() && !g.is_opaque() {
                         let mut guard = held.clone();

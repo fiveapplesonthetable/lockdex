@@ -5,6 +5,6 @@ package corpus;
 // this-monitor and B are acquired in both orders.
 public class T21_ThisMonitor {
     static final Object B = new Object();
-    synchronized void m1() { synchronized (B) { } }   // this -> B
+    public synchronized void m1() { synchronized (B) { } }   // this -> B
     void m2() { synchronized (B) { m1(); } }           // B -> this (via m1)
 }

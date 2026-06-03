@@ -42,7 +42,10 @@ enum Event {
 }
 
 pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: &juc::AsyncConfig) -> Summary {
-    let mut s = Summary { key: m.key(), class: m.class.clone(), ..Default::default() };
+    const ACC_PUBLIC: u32 = 0x1;
+    const ACC_PROTECTED: u32 = 0x4;
+    let external = m.access & (ACC_PUBLIC | ACC_PROTECTED) != 0;
+    let mut s = Summary { key: m.key(), class: m.class.clone(), external, ..Default::default() };
     let mut regs: HashMap<Reg, Lock> = HashMap::new();
     let mut alloc_ty: HashMap<String, String> = HashMap::new();
     let mut last_ret: Option<Lock> = None;
