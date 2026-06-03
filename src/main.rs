@@ -96,7 +96,7 @@ enum Cmd {
         #[arg(long)]
         async_dispatch: Option<PathBuf>,
     },
-    /// Reconstruct @GuardedBy and report fields whose guard is applied inconsistently.
+    /// Infer each field's guard lock and flag the ones guarded inconsistently.
     Races {
         /// .dex, .jar/.apk (multidex), or a Soong `out` directory
         input: PathBuf,
@@ -106,6 +106,13 @@ enum Cmd {
         /// only fields guarded by a lock whose name contains this
         #[arg(long)]
         guard: Option<String>,
+        /// baseline: percent of a field's writes that must share the guard before
+        /// the rest count as violations (lower = more, noisier; higher = stricter)
+        #[arg(long, default_value_t = 66)]
+        min_coverage: u32,
+        /// ignore fields written fewer than this many times
+        #[arg(long, default_value_t = 2)]
+        min_writes: usize,
         /// source checkout to inline the unguarded accesses from (optional)
         #[arg(long)]
         src_root: Option<PathBuf>,
@@ -249,8 +256,8 @@ fn main() -> Result<()> {
                 print!("{md}");
             }
         }
-        Cmd::Races { input, field, guard, src_root, out_dir, scope, async_dispatch } => {
-            let filter = races::Filter { field, guard };
+        Cmd::Races { input, field, guard, min_coverage, min_writes, src_root, out_dir, scope, async_dispatch } => {
+            let filter = races::Filter { field, guard, min_coverage, min_writes };
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
             let dex = input::parse_all(&set)?;

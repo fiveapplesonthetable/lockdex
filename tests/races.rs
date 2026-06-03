@@ -59,15 +59,17 @@ fn race_contracts() {
         let dex = java.with_extension("dex");
         assert!(dex.exists(), "{name}: missing {} — run `cargo run --example regen_dex -- races`", dex.display());
         let an = lockdex::analyze_dex(&dex, &async_cfg).unwrap_or_else(|e| panic!("{name}: {e:#}"));
+        // Assert against the default-filtered report (the default CLI baseline).
+        let report = lockdex::races::filtered(&an.races, &lockdex::races::Filter::default());
 
-        let got: Vec<&str> = an.races.fields.iter().map(|f| f.field.as_str()).collect();
+        let got: Vec<&str> = report.fields.iter().map(|f| f.field.as_str()).collect();
         for field in headers(&src, "RACE") {
-            if !flagged(&an.races, &field) {
+            if !flagged(&report, &field) {
                 fail.push(format!("{name}: expected RACE on '{field}'; flagged={got:?}"));
             }
         }
         for field in headers(&src, "NO_RACE") {
-            if flagged(&an.races, &field) {
+            if flagged(&report, &field) {
                 fail.push(format!("{name}: '{field}' must NOT be flagged; flagged={got:?}"));
             }
         }

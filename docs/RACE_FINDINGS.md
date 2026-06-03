@@ -115,4 +115,4 @@ counted too (read/write races) but ranked lower.
 `lockdex races <input> --src-root <aosp> --out-dir <dir>` writes the full set
 (`races.json`), a per-field diagram, and the offending lines in source;
 `--field <name>` / `--guard <lock>` narrows it to one field or lock. See the
-[README](../README.md#inconsistently-guarded-fields-guardedby).
+[README](../README.md#inconsistently-guarded-fields).

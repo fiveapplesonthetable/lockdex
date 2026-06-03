@@ -12,34 +12,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! `lockdex races` — render the field-race / `@GuardedBy` findings: a Markdown
-//! report, the violating source lines in context, and a per-field diagram showing
-//! the field, its guard lock, and the accessors that miss it.
+//! `lockdex races` — render the field-race findings: a Markdown report, the
+//! violating source lines in context, and a per-field diagram showing the field,
+//! its inferred guard lock, and the accessors that miss it.
 
 use crate::analyze::{Analysis, FieldRace};
 use crate::source::{class_path, esc, short_lock, short_method, snippet, Source};
 use std::fmt::Write as _;
 use std::path::Path;
 
-/// Narrow the report to a field and/or guard lock (substring match).
-#[derive(Default)]
+/// Which fields to report. `min_coverage` is the baseline: the percentage of a
+/// field's writes that must share the guard before the rest count as violations.
+/// `min_writes` is the smallest number of writes worth considering.
 pub struct Filter {
     pub field: Option<String>,
     pub guard: Option<String>,
+    pub min_coverage: u32,
+    pub min_writes: usize,
+}
+
+impl Default for Filter {
+    fn default() -> Self {
+        Filter { field: None, guard: None, min_coverage: 66, min_writes: 2 }
+    }
 }
 
 impl Filter {
+    /// A name filter is "active" — and lifts the diagram cap so every match is drawn.
     pub fn active(&self) -> bool {
         self.field.is_some() || self.guard.is_some()
     }
     fn keep(&self, f: &FieldRace) -> bool {
-        self.field.as_deref().is_none_or(|x| f.field.contains(x))
+        f.writes >= self.min_writes
+            && f.guarded_writes * 100 >= f.writes * self.min_coverage as usize
+            && self.field.as_deref().is_none_or(|x| f.field.contains(x))
             && self.guard.as_deref().is_none_or(|x| f.guard.contains(x))
     }
 }
 
 /// Diagrams beyond this many are skipped unless a filter narrows the report.
-const MAX_DIAGRAMS: usize = 40;
+const MAX_DIAGRAMS: usize = 50;
 
 /// The findings that pass a filter, as an owned report (for JSON export).
 pub fn filtered(r: &crate::analyze::RaceReport, filter: &Filter) -> crate::analyze::RaceReport {
@@ -57,24 +69,25 @@ pub fn report(an: &Analysis, filter: &Filter, src_root: Option<&Path>, out_dir: 
     let cap = if filter.active() { usize::MAX } else { MAX_DIAGRAMS };
 
     let mut md = String::new();
-    let _ = writeln!(md, "# lockdex — inconsistently-guarded fields (@GuardedBy)\n");
+    let _ = writeln!(md, "# lockdex — inconsistently-guarded fields\n");
     if filter.active() {
         let what = [filter.field.as_deref(), filter.guard.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(" + ");
         let _ = writeln!(md, "_Filtered to: {what}_\n");
     }
     let _ = writeln!(
         md,
-        "Each field below is guarded by one lock on most of its writes, but accessed \
-         without that lock somewhere — the unguarded accesses are the suspected races. \
-         The held-set is interprocedural (a field touched in a helper is guarded if the \
-         helper is always reached under the lock). `final`/`volatile` fields and \
-         constructor writes are excluded.\n"
+        "Each field below is guarded by one lock on at least {}% of its writes, but \
+         accessed without that lock somewhere — the unguarded accesses are the suspected \
+         races. The held-set is interprocedural (a field touched in a helper is guarded if \
+         the helper is always reached under the lock). `final`/`volatile` fields and \
+         constructor writes are excluded.\n",
+        filter.min_coverage
     );
     let _ = writeln!(md, "**{}** field(s) flagged.\n", fields.len());
 
     for (i, f) in fields.iter().enumerate() {
         let writes_v = f.violations.iter().filter(|v| v.write).count();
-        let _ = writeln!(md, "## `{}` — @GuardedBy(`{}`)\n", short_lock(&f.field), short_lock(&f.guard));
+        let _ = writeln!(md, "## `{}` — guarded by `{}`\n", short_lock(&f.field), short_lock(&f.guard));
         let _ = writeln!(
             md,
             "- guarded on **{}/{}** writes; {} read(s); **{}** access(es) miss the guard ({} write).",

@@ -78,7 +78,7 @@ impl RawCall {
 }
 
 /// One read or write of an instance field, with the locks held at that point
-/// (relative to the enclosing method). Feeds the field-race / @GuardedBy analysis.
+/// (relative to the enclosing method). Feeds the field-race analysis.
 #[derive(Debug, Clone)]
 struct FieldAccess {
     field: String,
@@ -125,8 +125,8 @@ pub struct Analysis {
     /// locks held across Binder IPC boundaries (a cross-process hazard, distinct
     /// from same-process deadlock cycles).
     pub binder: BinderReport,
-    /// fields whose guarding lock is applied inconsistently (`@GuardedBy`
-    /// reconstruction + the accesses that violate it).
+    /// fields whose inferred guard lock is applied inconsistently, with the
+    /// accesses that violate it.
     pub races: RaceReport,
 }
 
@@ -366,7 +366,7 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         binder.outgoing.len(), binder.incoming.len(), tb.elapsed().as_secs_f64()
     );
 
-    // --- field-race / @GuardedBy reconstruction ------------------------------
+    // --- field-race detection (guard reconstruction) -------------------------
     let tr = Instant::now();
     let races = races::compute(&by_key, &resolved, &alias, &dex.final_or_volatile_fields);
     eprintln!(

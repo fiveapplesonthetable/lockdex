@@ -9,15 +9,15 @@ already held, builds the global lock-order graph, and reports the cycles in it:
 the AB-BA inversions that are candidate deadlocks. It also exports the graph as a
 pprof profile and an HPROF heap dump so it can be explored in existing viewers.
 
-No annotations (`@GuardedBy` is not needed), no instrumented build, no runtime
+No annotations needed, no instrumented build, no runtime
 trace. One dex is the whole program for analysis purposes, so lock identity and
 the call graph are resolved across the entire component.
 
 Two related queries run on the same data: `lockdex binder` finds locks held across
 Binder IPC boundaries (a cross-process hazard rather than a same-process cycle),
-and `lockdex races` reconstructs `@GuardedBy` and flags inconsistently-guarded
+and `lockdex races` infers each field's guard lock and flags inconsistently-guarded
 fields. See [Locks across Binder IPC](#locks-across-binder-ipc) and
-[Inconsistently-guarded fields](#inconsistently-guarded-fields-guardedby).
+[Inconsistently-guarded fields](#inconsistently-guarded-fields).
 
 See [`docs/FINDINGS.md`](docs/FINDINGS.md) for example output — candidate
 lock-order inversions found in `system_server`, each with a diagram and the call
@@ -285,9 +285,9 @@ See [`docs/BINDER_FINDINGS.md`](docs/BINDER_FINDINGS.md) for what this finds on 
 real `system_server` — the ranked locks held across IPC and the four high-risk
 incoming entries, with diagrams.
 
-## Inconsistently-guarded fields (`@GuardedBy`)
+## Inconsistently-guarded fields
 
-`lockdex races` reconstructs `@GuardedBy` from the bytecode: for each field it
+`lockdex races` infers each field's guarding lock from the bytecode: for each field it
 looks at the locks held on its reads and writes, and flags the fields that are
 guarded by one lock *almost* always — the remaining unguarded accesses are the
 suspected races.

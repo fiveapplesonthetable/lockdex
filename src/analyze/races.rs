@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Field-race / `@GuardedBy` reconstruction (RacerD-style).
+//! Field-race detection by guard reconstruction (RacerD-style).
 //!
 //! For each field we look at the locks held on its reads and writes. A field whose
 //! writes are *consistently* guarded by one lock `L`, except at a few sites, is one
-//! `@GuardedBy(L)` would protect — and those few sites are the suspected races.
+//! `L` is meant to protect — and those few sites are the suspected races.
 //!
 //! The held-set at an access is interprocedural: a field written inside a helper is
 //! guarded if the helper is *always* reached under the lock. That "always held on
@@ -44,7 +44,7 @@ pub struct Violation {
 pub struct FieldRace {
     /// `DeclaringClass.field`.
     pub field: String,
-    /// the lock that guards most of its writes — the `@GuardedBy` candidate.
+    /// the lock that guards most of its writes — the inferred guard.
     pub guard: String,
     pub writes: usize,
     pub reads: usize,
@@ -183,10 +183,14 @@ pub(super) fn compute(
     }
 
     // A field is racy if one lock guards a majority of its (≥2) writes but some
-    // access still misses it. Pick that dominant lock as the `@GuardedBy` candidate.
+    // access still misses it. Pick that dominant lock as the inferred guard.
+    // Every field with a dominant write-guard and at least one access that misses it
+    // is a candidate; the coverage baseline (what fraction of writes must hold the
+    // guard) is a presentation choice applied by the reporter, so the user can tune
+    // it. Sorted tie-breaks keep the chosen guard deterministic.
     let mut guard_of: HashMap<String, String> = HashMap::new();
     for (&field, st) in &stats {
-        if st.writes < 2 {
+        if st.writes == 0 {
             continue;
         }
         let Some((guard, &gcount)) =
@@ -196,11 +200,7 @@ pub(super) fn compute(
         };
         let read_guarded = st.read_guard.get(guard).copied().unwrap_or(0);
         let misses = (st.writes - gcount) + (st.reads - read_guarded);
-        // Require a clear majority of writes to hold the guard (≥2/3) before
-        // calling the rest violations — at lower coverage the "guard" is usually a
-        // call-graph artifact (a guarded access mis-read as unguarded), not a real
-        // @GuardedBy contract.
-        if gcount * 3 >= st.writes * 2 && misses > 0 {
+        if misses > 0 {
             guard_of.insert(field.to_string(), guard.clone());
         }
     }

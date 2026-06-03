@@ -49,7 +49,7 @@ impl Direction {
 
 /// Diagrams beyond this many per side are skipped — unless a [`Filter`] narrows the
 /// report to one lock or service, in which case every match gets a diagram.
-const MAX_DIAGRAMS: usize = 40;
+const MAX_DIAGRAMS: usize = 50;
 
 /// Narrow the report to a single lock and/or holding class (substring match), so a
 /// focused run emits the source and diagrams for, say, all of `ActivityManagerService`
