@@ -176,9 +176,33 @@ pub fn parse_all(set: &DexSet) -> Result<Dex> {
         .par_iter()
         .map(|p| dexdump::parse_dex(p))
         .collect::<Result<Vec<_>>>()?;
+    Ok(merge_dexes(parsed))
+}
+
+/// Merge per-dex parses into one. Every field of [`Dex`] must be carried over —
+/// dropping `final_or_volatile_fields` silently disables the race exclusion for the
+/// whole jar (regression-tested below).
+fn merge_dexes(parsed: Vec<Dex>) -> Dex {
     let mut merged = Dex::default();
     for d in parsed {
         merged.classes.extend(d.classes);
+        merged.final_or_volatile_fields.extend(d.final_or_volatile_fields);
     }
-    Ok(merged)
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_preserves_final_or_volatile_fields() {
+        let mut a = Dex::default();
+        a.final_or_volatile_fields.insert("pkg.A.mState".to_string());
+        let mut b = Dex::default();
+        b.final_or_volatile_fields.insert("pkg.B.mFlag".to_string());
+        let merged = merge_dexes(vec![a, b]);
+        assert!(merged.final_or_volatile_fields.contains("pkg.A.mState"));
+        assert!(merged.final_or_volatile_fields.contains("pkg.B.mFlag"));
+    }
 }
