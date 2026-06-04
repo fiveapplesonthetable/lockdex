@@ -58,7 +58,7 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
             regs.insert(t + j, Lock::new(Root::Param(j)));
         }
     } else if m.ins > 0 {
-        let base = m.registers - m.ins;
+        let base = m.registers.saturating_sub(m.ins);
         for j in 0..m.ins {
             regs.insert(base + j, Lock::new(Root::Param(j)));
         }
@@ -79,7 +79,7 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
             Op::Sget { dst, class, field } => {
                 regs.insert(*dst, Lock::field(Root::Static(class.clone()), field.clone()));
             }
-            Op::Iget { dst, base, class, field } => {
+            Op::Iget { dst, base, class, field, .. } => {
                 let fresh = regs.get(base).is_some_and(|l| matches!(l.root, Root::Alloc(_)));
                 let inst = base_inst(&regs, *base);
                 regs.insert(*dst, Lock::field(Root::Recv(class.clone()), field.clone()));
@@ -317,8 +317,13 @@ fn held_dataflow(m: &Method, effect: &[Option<Effect>], seed: Vec<Lock>) -> Vec<
     }
     entry[0] = Some(seeded);
 
-    // Iterate to a fixed point (bounded; reducible CFGs converge in a few passes).
-    for _ in 0..n.min(200) + 1 {
+    // Iterate to a fixed point. d8/javac emit reducible CFGs (no irreducible goto
+    // from structured Java/Kotlin), so round-robin converges in loop-depth + 2
+    // passes — far fewer than this `n + 1` bound, and the `!changed` break exits as
+    // soon as it settles. The bound is a guaranteed-sufficient backstop, not the
+    // expected pass count; capping lower could stop early and over-claim held locks
+    // (the unsound direction, which would suppress a real order edge).
+    for _ in 0..n + 1 {
         let mut changed = false;
         for i in 1..n {
             if preds[i].is_empty() {

@@ -36,7 +36,15 @@ pub enum Op {
     /// `sget-object dst, Lcls;.field:type`
     Sget { dst: Reg, class: String, field: String },
     /// `iget-object dst, base, Lcls;.field:type`
-    Iget { dst: Reg, base: Reg, class: String, field: String },
+    Iget {
+        dst: Reg,
+        base: Reg,
+        class: String,
+        field: String,
+        /// the field's declared type, dotted for object types (e.g. `android.net.Uri`)
+        /// and a JVM primitive letter for scalars (`I`, `Z`, ...). `None` if absent.
+        ty: Option<String>,
+    },
     /// `iput-object src, base, Lcls;.field:type` (used for lambda capture summaries)
     Iput { src: Reg, base: Reg, class: String, field: String },
     /// `const-class dst, Lcls;`
@@ -129,7 +137,9 @@ impl Method {
         if self.is_static() || self.ins == 0 {
             None
         } else {
-            Some(self.registers - self.ins)
+            // A well-formed method always has registers >= ins; saturate rather than
+            // underflow (panic in debug / wrap in release) on truncated dexdump.
+            Some(self.registers.saturating_sub(self.ins))
         }
     }
     /// Source line for a code offset (largest position <= offset).

@@ -16,6 +16,7 @@
 
 use crate::analyze::{Analysis, Edge};
 use crate::graph::LockGraph;
+use crate::source::esc;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -187,11 +188,11 @@ pub fn dot_cycles(g: &LockGraph) -> String {
     let mut cycle_nodes: Vec<usize> = in_cycle.iter().copied().collect();
     cycle_nodes.sort();
     for &i in &cycle_nodes {
-        let _ = writeln!(s, "  \"{}\";", g.nodes[i].name());
+        let _ = writeln!(s, "  \"{}\";", esc(&g.nodes[i].name()));
     }
     for (a, b, ev) in g.sorted_evidence() {
         if in_cycle.contains(&a) && in_cycle.contains(&b) && ev.iter().any(|e| !e.nonblocking) {
-            let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"{}\"];", g.nodes[a].name(), g.nodes[b].name(), ev.len());
+            let _ = writeln!(s, "  \"{}\" -> \"{}\" [label=\"{}\"];", esc(&g.nodes[a].name()), esc(&g.nodes[b].name()), ev.len());
         }
     }
     s.push_str("}\n");
@@ -212,7 +213,7 @@ pub fn dot(g: &LockGraph) -> String {
         let _ = writeln!(
             s,
             "  \"{}\" [color=red,style=filled,fillcolor=\"#ffe0e0\"];",
-            g.nodes[i].name()
+            esc(&g.nodes[i].name())
         );
     }
     for (a, b, ev) in g.sorted_evidence() {
@@ -225,8 +226,8 @@ pub fn dot(g: &LockGraph) -> String {
         let _ = writeln!(
             s,
             "  \"{}\" -> \"{}\" [label=\"{}\"{}{}];",
-            g.nodes[a].name(),
-            g.nodes[b].name(),
+            esc(&g.nodes[a].name()),
+            esc(&g.nodes[b].name()),
             ev.len(),
             col,
             style

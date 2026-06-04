@@ -316,9 +316,13 @@ fn parse_insn(body: &str) -> Op {
             let mut it = rest.splitn(3, ',');
             let dst = it.next().and_then(reg);
             let base = it.next().and_then(reg);
-            let fref = it.next().map(str::trim).and_then(parse_field_ref);
+            let raw = it.next().map(str::trim);
+            let fref = raw.and_then(parse_field_ref);
+            let ty = raw.and_then(parse_field_type);
             match (dst, base, fref) {
-                (Some(dst), Some(base), Some((class, field))) => Op::Iget { dst, base, class, field },
+                (Some(dst), Some(base), Some((class, field))) => {
+                    Op::Iget { dst, base, class, field, ty }
+                }
                 (Some(dst), _, _) => Op::Def(dst),
                 _ => Op::Other,
             }
@@ -422,9 +426,13 @@ fn parse_reg_list(s: &str) -> Vec<Reg> {
         return Vec::new();
     }
     if let Some((a, b)) = s.split_once("..") {
-        // range form "v1 .. v4"
+        // range form "v1 .. v4". A real invoke/range spans at most 256 registers;
+        // bound the span so a garbled operand can't request a multi-GB allocation.
         if let (Some(lo), Some(hi)) = (reg(a), reg(b)) {
-            return (lo..=hi).collect();
+            if hi >= lo && hi - lo < 256 {
+                return (lo..=hi).collect();
+            }
+            return Vec::new();
         }
     }
     s.split(',').filter_map(reg).collect()
@@ -438,6 +446,24 @@ fn parse_field_ref(s: &str) -> Option<(String, String)> {
     let after = &s[sep + 2..];
     let name = after.split(':').next()?.to_string();
     Some((class, name))
+}
+
+/// Extract a field's declared type from `Lcls;.name:type`. Object types
+/// (`Landroid/net/Uri;`) are returned dotted; primitives (`I`, `Z`, `[I`, ...)
+/// are returned verbatim.
+fn parse_field_type(s: &str) -> Option<String> {
+    let s = s.trim();
+    let sep = s.find(";.")?;
+    let after = &s[sep + 2..];
+    let ty = after.split(':').nth(1)?.trim();
+    if ty.is_empty() {
+        return None;
+    }
+    if ty.starts_with('L') && ty.ends_with(';') {
+        Some(descriptor_to_dotted(ty))
+    } else {
+        Some(ty.to_string())
+    }
 }
 
 /// "Lcls;.name:sig" -> (dotted class, name, sig)

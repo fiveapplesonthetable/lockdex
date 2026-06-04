@@ -118,9 +118,13 @@ pub fn short_lock(name: &str) -> String {
     }
 }
 
-/// Escape a string for a Graphviz double-quoted label.
+/// Escape a string for a Graphviz double-quoted label. Backslash and quote are
+/// escaped; newline/carriage-return/tab are mapped to spaces so a stray control
+/// byte from the dex string pool can't corrupt the line structure.
 pub fn esc(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(['\n', '\r', '\t'], " ")
 }
 
 /// Inline a fenced source window for `class_fqn:line` into `out`, resolving the
@@ -176,17 +180,15 @@ pub fn acquire_sites(lines: &[String], field: &str) -> Vec<(usize, String)> {
 /// Whole-word containment (so `mLock` does not match `mLockProfile`).
 pub fn contains_word(s: &str, w: &str) -> bool {
     let bytes = s.as_bytes();
-    let wb = w.as_bytes();
-    let mut i = 0;
-    while let Some(pos) = s[i..].find(w) {
-        let start = i + pos;
-        let end = start + wb.len();
+    // `match_indices` only ever yields char-boundary offsets, so this is safe even
+    // when `s` or `w` contains multi-byte UTF-8 (Unicode identifiers).
+    for (start, _) in s.match_indices(w) {
+        let end = start + w.len();
         let before_ok = start == 0 || !is_ident(bytes[start - 1]);
         let after_ok = end >= bytes.len() || !is_ident(bytes[end]);
         if before_ok && after_ok {
             return true;
         }
-        i = start + 1;
     }
     false
 }
