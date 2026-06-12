@@ -3,7 +3,9 @@
 `lockdex` flagged 19 candidate lock-order cycles on a build's `services.jar`. Each
 of the 18 with ≤4 locks was traced to source by `lockdex verify` and then **read
 against AOSP** — call paths followed, locks checked for object identity, threads
-checked for real concurrency, documented orderings accounted for.
+checked for real concurrency, documented orderings accounted for. The 19th is a
+74-lock tangle, [decomposed below](#the-19th-cycle-the-74-lock-tangle-decomposed)
+into its minimal inversions (not yet audited).
 
 **8 are real deadlocks** (distinct objects, both acquisition orders present, sites
 on different threads). They lead, each with a fix. The 10 that did not survive are
@@ -178,6 +180,49 @@ component-local analysis does not have.
 **Single-threaded.** **cand13** (`mProcessCpuTracker`/`mClock`/`BatteryStatsImpl`):
 the three only interleave on the one `batterystats-handler` thread, and `mClock` is a
 shared `Clock.SYSTEM_CLOCK` singleton.
+
+---
+
+## The 19th cycle: the 74-lock tangle, decomposed
+
+The remaining candidate is a 74-lock strongly-connected component — the
+interconnected AMS/ATMS/WMS/accessibility lock hierarchy. Earlier versions of
+the report printed a 12-member sample of it and stopped; lockdex now lists every
+member and decomposes the tangle into its **minimal inversions** (for each order
+edge, the shortest cycle back). On this build: **659 inversions, 108 of them
+tight 2-lock AB-BAs**, each with `file:line` on both sides, in `report.txt` and
+`lockgraph.json` (`cycles[].inversions`). `lockdex verify` picks the small ones
+up as ordinary candidates, so the tangle is verified piecewise.
+
+**None of these have been audited the way the 18 candidates above were** — by
+the dismissal statistics there, expect a sizable fraction to be aliasing or
+call-graph over-approximation. A few of the 2-lock inversions, as the tool
+reports them:
+
+- `UiModeManagerService.mLock` ⇄ `ActivityTaskManagerService.mGlobalLock` —
+  `UiModeManagerService$10.onChange:436` takes `mLock` then reaches
+  `mGlobalLock`; `WindowManagerService$LocalService.onDisplayUiModeChanged:8799`
+  holds `mGlobalLock` and reaches `mLock`.
+- `DeviceIdleController.this` ⇄ `AlarmManagerService.mLock` —
+  `DeviceIdleController$LocalService.onConstraintStateChanged:2323` vs
+  `AlarmManagerService.onBootPhase:1990`.
+- `AccessibilityManagerService.mLock` ⇄ `UiAutomationManager.mLock` —
+  `AccessibilityManagerService$Client.<init>:5954` vs
+  `UiAutomationManager.destroyUiAutomationService:233`.
+
+The accessibility cluster (`AbstractAccessibilityServiceConnection`,
+`AccessibilityWindowManager`, `ProxyManager`, `MagnificationController`,
+`AccessibilityManagerService`) accounts for a large share of the 2-lock
+inversions and would be the place to start an audit.
+
+Regenerate this decomposition with:
+
+```sh
+lockdex analyze "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+    --out-dir ./lockdex-out          # report.txt: LOCK TANGLE section
+lockdex verify "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+    --src-root "$ANDROID_BUILD_TOP" --max-locks 2 --out-dir ./verify-out
+```
 
 ---
 

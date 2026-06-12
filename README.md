@@ -79,9 +79,10 @@ Without `--out-dir`, lockdex prints a text report (or `--format json|dot`). With
 
 | file | what |
 |---|---|
-| `report.txt` | the deadlock report — small actionable cycles first, then large "lock tangle" SCCs, each with the locks and the order edges (`file:line`) |
-| `lockgraph.json` | the full graph and findings, for tooling |
-| `lockgraph.dot` / `.svg` | the lock-order graph, cycles in red |
+| `report.txt` | the deadlock report — small actionable cycles first, then large "lock tangle" SCCs with every member and their minimal inversions (`file:line` on each edge) |
+| `lockgraph.json` | the full graph and findings (incl. per-SCC `inversions`), for tooling |
+| `cycles.dot` / `cycles.svg` | the deadlock picture: small cycles (red) + tangle inversions (amber); the SVG is rendered automatically when Graphviz `dot` is installed |
+| `lockgraph.dot` | the *full* lock-order graph for tooling — written but not rendered (too many edges) |
 | `lockorder.pb.gz` | pprof of the lock-order graph — `go tool pprof -http=: lockorder.pb.gz` |
 | `methodlock.hprof` | the method/lock dependency graph as an HPROF heap dump for Perfetto |
 
@@ -96,6 +97,47 @@ With `--out-dir`, stdout is a short summary of what was found and which files
 hold it (the full report goes to `report.txt`, not the terminal). Without it, the
 full text report prints to stdout. Output is deterministic: the same dex always
 produces byte-identical artifacts.
+
+## Generating diagrams (SVGs) and code paths
+
+All diagrams come from `--out-dir`. Prerequisites:
+
+- **Graphviz `dot`** on `PATH` — the only extra tool. Without it lockdex still
+  writes every `.dot` file and says so; render later with
+  `dot -Tsvg file.dot > file.svg`.
+- **`--src-root <checkout>`** wherever you want actual *code* in the output —
+  the source tree the dex was built from (for AOSP, `$ANDROID_BUILD_TOP` or
+  `frameworks/base`). Required by `verify`, optional for `binder` / `races`.
+
+What each command draws:
+
+| command | diagram | what it shows |
+|---|---|---|
+| `analyze --out-dir D` | `D/cycles.svg` | every deadlock cycle: small SCCs (red) and tangle inversions (amber), edge labels = number of inducing sites |
+| `verify --src-root S --out-dir D` | `D/candNN.svg` per candidate | the **call-path DAG** of one deadlock: lock nodes (red) joined by the real call chain of each order edge (`held in → calls… → acquires`); `verify.txt` inlines the source lines of both orderings |
+| `binder --src-root S --out-dir D` | per-finding `*.svg` | the chain from the lock holder to the Binder boundary; `binder.md` inlines the holding site's source |
+| `races --src-root S --out-dir D` | per-field `*.svg` | the field, its inferred guard (green), and the unguarded accessors (red); `races.md` inlines the offending lines |
+
+The curated reports under [`docs/`](docs/) (`FINDINGS.md`, `BINDER_FINDINGS.md`,
+`RACE_FINDINGS.md`) were produced exactly this way — run the command with
+`--out-dir`, copy the per-finding SVGs next to the markdown, then audit each
+finding against source and write up the ones that survive:
+
+```sh
+# deadlocks: analyze, then verify each candidate with code + per-candidate SVGs
+lockdex verify out/soong/system_server_dexjars/services.jar \
+    --src-root "$ANDROID_BUILD_TOP" --max-locks 4 --out-dir ./verify-out
+# binder hazards, filtered to one service => every matching site gets an SVG
+lockdex binder services.jar --class ActivityManagerService \
+    --src-root "$ANDROID_BUILD_TOP" --out-dir ./binder-out
+# field races, filtered to one guard lock
+lockdex races services.jar --guard mProcLock \
+    --src-root "$ANDROID_BUILD_TOP" --out-dir ./races-out
+```
+
+`--lock` / `--class` / `--field` / `--guard` filters switch binder/races from
+"sample the top findings" to "emit a diagram + source for *every* match", which
+is how you get the complete image set for one service or lock.
 
 ## Reading the report
 
@@ -121,13 +163,19 @@ produces byte-identical artifacts.
   sites to run on different threads (see below).
 
 A **`LOCK TANGLE`** block instead of `DEADLOCK` is a large strongly-connected
-component — many locks mutually out-of-order. These reflect a globally
-interconnected lock hierarchy (the `system_server` AMS/ATMS/WMS locks are the
-classic case) rather than one fixable inversion; skim them, but the small
-`DEADLOCK` cycles are where the actionable bugs are.
+component — many locks mutually out-of-order (the `system_server` AMS/ATMS/WMS
+locks are the classic case). A tangle is **not** summarized away: the block lists
+*all* of its member locks, then decomposes the tangle into its **minimal
+inversions** — for every order edge, the shortest cycle through it — each printed
+like a small `DEADLOCK` (locks, edges, `file:line`). Inversions whose every
+acquisition shares a common outer lock are kept but marked `[gated by …]` (they
+cannot interleave); nothing is silently dropped, and every order edge in the
+tangle appears in at least one listed inversion. The same decomposition is in
+`lockgraph.json` under `cycles[].inversions`.
 
-Open `cycles.svg` for the same small cycles as a picture, and use `verify` to pull
-the exact source for any of them.
+Open `cycles.svg` for the picture — small cycles in red, tangle inversions in
+amber — and use `verify` to pull the exact source for any of them (tangles are
+verified piecewise, one inversion at a time).
 
 ## Verifying candidates against source
 
@@ -321,23 +369,43 @@ path.
 ## Tuning the async-dispatch list
 
 Held locks are *severed* at calls that defer work to another thread, so a lock
-held when work is posted is not treated as held when it runs. The built-ins cover
-`Handler.post*` / `sendMessage*`, `Executor.execute`, `ExecutorService.submit`,
-`Thread.start`, `AsyncTask.execute`, etc. — but only by name, so a project's own
-dispatcher won't be recognized.
+held when work is posted is not treated as held when it runs:
+`synchronized (lock) { handler.post(() -> foo()) }` does **not** run `foo()`
+under `lock`, and no order edge or guard credit flows through the dispatch.
 
-`--async-dispatch FILE` adjusts the list on top of the built-ins. One entry per
-line. An entry may be a fully-qualified `pkg.Class.method`, a simple `Class.method`,
-or a bare `method` (matches that method on any class). A leading `-` disables a
-built-in; `#` for comments:
+Dispatch points are recognized two ways, both on by default:
+
+- **By name** — `Handler.post*` / `sendMessage*`, `Executor.execute`,
+  `ExecutorService.submit`, `Thread.start`, `AsyncTask.execute`, etc.
+- **By type hierarchy** — the same methods on **anything that inherits from** a
+  dispatcher base: `android.os.Handler`, the `java.util.concurrent` executor
+  types, `java.lang.Thread`, `android.os.AsyncTask`, `View.post*`,
+  `Message.sendToTarget`, `Timer`, `CompletableFuture.*Async`. A custom `Handler`
+  subclass or an `Executor` implementation with an arbitrary name is recognized
+  by what it *is*, not what it's called (see `ASYNC_BASES` in `src/juc.rs`).
+  The standard JDK/Android chains (`ThreadPoolExecutor → … → Executor`,
+  `HandlerThread → Thread`) are known to the tool even when those classes are
+  not in the analyzed dex (`KNOWN_SUPERS`). The hierarchy is otherwise read from
+  the dex itself, so a subclass chain that passes through a class *outside* the
+  dex (and outside `KNOWN_SUPERS`) cannot be followed — add an `extends` entry
+  for such a dispatcher.
+
+`--async-dispatch FILE` adjusts both lists on top of the built-ins. One entry per
+line, `#` for comments, a leading `-` disables a built-in:
 
 ```
-# treat our own dispatcher as async — FQN (precise) or simple name both work
+# name entries: FQN (precise), simple Class.method, or bare method
 com.example.os.MyDispatcher.runLater
 MyDispatcher.runLater
 postToBackground
-# ...and stop treating AsyncTask.execute as async
+# hierarchy entries: the base class (fully qualified) and everything
+# inheriting from it
+extends com.example.os.WorkQueue: enqueue enqueueFront
+# stop treating AsyncTask.execute as async (name entry — matches the class
+# declared at the call site, not its subtypes)
 -AsyncTask.execute
+# disable a built-in hierarchy base entirely (covers its subtypes)
+-extends java.lang.Thread
 ```
 
 ```sh
@@ -350,7 +418,8 @@ edges back. It is a list, so add or remove freely without rebuilding.
 ## Tests
 
 `tests/corpus/` holds small Java programs, each with the verdict it should
-produce encoded in its header comment (`// EXPECT:` and `// CYCLE:`). Each fixture
+produce encoded in its header comment (`// EXPECT:`, `// CYCLE:`, and
+`// INVERSION:` for the minimal-inversion decomposition of a tangle). Each fixture
 is committed alongside a prebuilt `.dex`, so the suite runs in-process with no Java
 toolchain:
 
@@ -368,9 +437,11 @@ cargo run --example regen_dex
 The corpus covers nested and interprocedural AB-BA, three-lock cycles,
 getter-aliased and constructor-parameter-aliased locks, a shared singleton lock
 split across fields, two-instance aliasing, guard-protected non-deadlocks, async
-boundaries, `java.util.concurrent` locks, read/write locks, reentrancy, lambda
-capture, try-lock, inheritance with override (RTA) dispatch, static-synchronized
-class locks, and instance-synchronized `this` monitors.
+boundaries (both by name and via an Executor *subtype* with an unrelated name),
+a 13-lock tangle with its minimal-inversion decomposition, `java.util.concurrent`
+locks, read/write locks, reentrancy, lambda capture, try-lock, inheritance with
+override (RTA) dispatch, static-synchronized class locks, and
+instance-synchronized `this` monitors.
 
 `tests/binder/` is a second corpus for the Binder analysis, with `// OUT:`,
 `// NO_OUT:`, `// IN:`, and `// HIGH:` contracts (lock held across an outgoing
