@@ -17,6 +17,8 @@
 //!
 //!   // EXPECT: DEADLOCK | NO_DEADLOCK
 //!   // CYCLE:  space-separated lock names that must co-occur in one reported cycle
+//!   // INVERSION: lock names that must form (exactly, as a set) one reported
+//!   //            minimal inversion inside some cycle / tangle
 //!
 //! The `.java` is the readable source of truth; the analyzer runs against the
 //! sibling prebuilt `<name>.dex`. The dex is committed so the test runs in-process
@@ -80,6 +82,23 @@ fn corpus_contracts() {
         if !ok(&expect, &want, &rep) {
             let got: Vec<&Vec<String>> = rep.cycles.iter().map(|c| &c.locks).collect();
             failures.push(format!("{name}: expect={expect} cycle={want:?} got={got:?}"));
+        }
+
+        // INVERSION: some cycle must contain a minimal inversion over exactly
+        // this lock set.
+        if let Some(inv) = header(&src, "INVERSION") {
+            let want: std::collections::HashSet<String> =
+                inv.split_whitespace().map(String::from).collect();
+            let hit = rep.cycles.iter().any(|c| {
+                c.inversions.iter().any(|v| {
+                    v.locks.len() == want.len() && v.locks.iter().all(|l| want.contains(l))
+                })
+            });
+            if !hit {
+                let got: Vec<&Vec<String>> =
+                    rep.cycles.iter().flat_map(|c| c.inversions.iter().map(|v| &v.locks)).collect();
+                failures.push(format!("{name}: expected inversion {want:?}; got inversions={got:?}"));
+            }
         }
     }
 

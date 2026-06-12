@@ -21,7 +21,7 @@
 //! objects; (3) the two sides can run on different threads. (1) and (2) are
 //! checked mechanically; (3) still needs a human, but the sites make it quick.
 
-use crate::report::{CycleReport, JsonReport};
+use crate::report::{EdgeJson, JsonReport};
 use crate::source::{acquire_sites, esc, print_ctx, rel, short_lock, short_method, Source};
 use std::fmt::Write as _;
 use std::path::Path;
@@ -39,11 +39,20 @@ fn parse_sample(s: &str) -> Option<(String, String, usize)> {
     Some((methodkey, class, line))
 }
 
+/// One verification candidate: a small SCC, or one minimal inversion pulled out
+/// of a large tangle (so tangles are verified piecewise instead of skipped).
+struct Cand<'a> {
+    locks: &'a [String],
+    edges: &'a [EdgeJson],
+    /// `Some(n)`: this is an inversion inside a tangle of `n` locks.
+    tangle: Option<usize>,
+}
+
 /// The method graph for one deadlock: every call edge `(caller, heldLock, callee)`
 /// along the paths of the cycle's order edges. Feeds the per-candidate pprof/hprof.
-fn candidate_method_edges(c: &CycleReport, paths: &crate::analyze::PathIndex) -> Vec<(String, String, String)> {
+fn candidate_method_edges(c: &Cand, paths: &crate::analyze::PathIndex) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
-    for e in &c.edges {
+    for e in c.edges {
         let holder = e.sample.as_deref().and_then(parse_sample).map(|(mk, _, _)| mk);
         if let Some(p) = holder.as_deref().and_then(|h| paths.path_to(h, &e.to, 16)) {
             let held = short_lock(&e.from);
@@ -59,7 +68,7 @@ fn candidate_method_edges(c: &CycleReport, paths: &crate::analyze::PathIndex) ->
 /// call path of each order edge (held → … → acquires). Top-to-bottom layout, so
 /// the two paths form a readable loop between the shared lock nodes rather than a
 /// wide horizontal strip.
-fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
+fn cycle_dot(c: &Cand, paths: &crate::analyze::PathIndex) -> String {
     let mut s = String::from(
         "digraph cycle {\n  \
          rankdir=TB; bgcolor=\"white\";\n  \
@@ -76,7 +85,7 @@ fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
             s.push_str(&line);
         }
     };
-    for l in &c.locks {
+    for l in c.locks {
         emit(
             format!(
                 "  \"{}\" [shape=box, style=\"filled,rounded\", fillcolor=\"#fee2e2\", color=\"#dc2626\", penwidth=2, fontsize=13, label=\"{}\"];\n",
@@ -85,7 +94,7 @@ fn cycle_dot(c: &CycleReport, paths: &crate::analyze::PathIndex) -> String {
             &mut s, &mut seen,
         );
     }
-    for e in &c.edges {
+    for e in c.edges {
         let holder = e.sample.as_deref().and_then(parse_sample).map(|(mk, _, _)| mk);
         let path = holder.as_deref().and_then(|h| paths.path_to(h, &e.to, 16));
         match path {
@@ -157,24 +166,53 @@ pub fn run(
 ) -> String {
     let mut src = Source::index(root);
     let mut out = String::new();
-    let cycles: Vec<_> = report.cycles.iter().filter(|c| c.locks.len() <= max_locks).collect();
+    // Small SCCs verify whole; a tangle (SCC above `max_locks`) contributes each
+    // of its small, unguarded minimal inversions as a separate candidate — a big
+    // cluster is verified piecewise rather than skipped.
+    let mut cands: Vec<Cand> = Vec::new();
+    let (mut gated, mut oversize) = (0usize, 0usize);
+    for c in &report.cycles {
+        if c.locks.len() <= max_locks {
+            cands.push(Cand { locks: &c.locks, edges: &c.edges, tangle: None });
+        } else {
+            for v in &c.inversions {
+                if !v.guard.is_empty() {
+                    gated += 1; // outer-lock gated: in report.txt marked [gated by …]
+                } else if v.locks.len() > max_locks {
+                    oversize += 1; // raise --max-locks to verify these too
+                } else {
+                    cands.push(Cand { locks: &v.locks, edges: &v.edges, tangle: Some(c.locks.len()) });
+                }
+            }
+        }
+    }
+    let from_tangles = cands.iter().filter(|c| c.tangle.is_some()).count();
     let _ = writeln!(
         out,
-        "lockdex verify — {} candidate cycle(s) with <= {} locks (of {} total)\n\
+        "lockdex verify — {} candidate(s) with <= {} locks ({} small cycles, {} inversions from larger tangles; {} SCC(s) total)\n\
+         not verified here: {} guard-gated inversion(s) (see report.txt), {} inversion(s) over --max-locks\n\
          source: {}\n",
-        cycles.len(),
+        cands.len(),
         max_locks,
+        cands.len() - from_tangles,
+        from_tangles,
         report.cycles.len(),
+        gated,
+        oversize,
         root.display()
     );
 
-    for (ci, c) in cycles.iter().enumerate() {
-        let _ = writeln!(out, "================ CANDIDATE {} : {} locks ================", ci + 1, c.locks.len());
-        for l in &c.locks {
+    for (ci, c) in cands.iter().enumerate() {
+        let tag = match c.tangle {
+            Some(n) => format!(" (inversion inside a {n}-lock tangle)"),
+            None => String::new(),
+        };
+        let _ = writeln!(out, "================ CANDIDATE {} : {} locks{} ================", ci + 1, c.locks.len(), tag);
+        for l in c.locks {
             let _ = writeln!(out, "   lock  {l}");
         }
         let mut edges_ok = 0;
-        for e in &c.edges {
+        for e in c.edges {
             let _ = writeln!(out, "\n   {}  ->  {}   [{}x]", e.from, e.to, e.count);
             let parsed = e.sample.as_deref().and_then(parse_sample);
             // (a) the edge site: where `from` is held and the call is made.
