@@ -42,8 +42,11 @@ enum Cmd {
         #[arg(long)]
         scope: Option<String>,
         /// extra async-dispatch methods: `Class.method` to add, `-Class.method`
-        /// to disable a built-in (one per line, `#` comments). Added on top of the
-        /// defaults (Handler.post, Executor.execute, Thread.start, ...).
+        /// to disable a built-in, `extends pkg.Base: m1 m2` to cover a base class
+        /// and everything inheriting from it, `-extends pkg.Base` to disable a
+        /// built-in base (one per line, `#` comments). Added on top of the
+        /// defaults (Handler.post, Executor.execute, Thread.start, ... and their
+        /// subtypes — see ASYNC_BASES).
         #[arg(long)]
         async_dispatch: Option<PathBuf>,
     },
@@ -128,8 +131,12 @@ enum Cmd {
     },
 }
 
-/// Load `--async-dispatch` adjustments: `Class.method` / `method` adds a point,
-/// a leading `-` disables a built-in. Blank lines and `#` comments are ignored.
+/// Load `--async-dispatch` adjustments. Per line (`#` comments, blanks ignored):
+///   Class.method | method          add an async-dispatch point by name
+///   -Class.method | -method        disable a built-in name entry
+///   extends pkg.Base: m1 m2        dispatch methods on pkg.Base *and every
+///                                  class inheriting from it* (type hierarchy)
+///   -extends pkg.Base              disable a built-in hierarchy base entirely
 fn load_async_dispatch(path: Option<&Path>) -> Result<juc::AsyncConfig> {
     let mut cfg = juc::AsyncConfig::default();
     let Some(p) = path else { return Ok(cfg) };
@@ -139,13 +146,42 @@ fn load_async_dispatch(path: Option<&Path>) -> Result<juc::AsyncConfig> {
         if s.is_empty() {
             continue;
         }
-        if let Some(rest) = s.strip_prefix('-') {
-            cfg.remove.insert(rest.trim().to_string());
+        let (removing, body) = match s.strip_prefix('-') {
+            Some(rest) => (true, rest.trim()),
+            None => (false, s.trim_start_matches('+').trim()),
+        };
+        if let Some(rest) = body.strip_prefix("extends ") {
+            if removing {
+                // tolerate `-extends pkg.Base: m1 m2` — the disable is per base,
+                // so anything after `:` is irrelevant.
+                let base = rest.split(':').next().unwrap_or(rest).trim();
+                cfg.remove_base.insert(base.to_string());
+            } else {
+                let (base, methods) = rest.split_once(':').with_context(|| {
+                    format!("`extends` entry needs `extends pkg.Base: m1 m2 ...`, got: {s}")
+                })?;
+                let base = base.trim();
+                // hierarchy matching compares fully-qualified names from the dex;
+                // a simple name would silently never match.
+                anyhow::ensure!(
+                    base.contains('.'),
+                    "`extends {base}`: base must be fully qualified (e.g. com.example.os.{base})"
+                );
+                let ms: std::collections::HashSet<String> =
+                    methods.split_whitespace().map(String::from).collect();
+                anyhow::ensure!(!ms.is_empty(), "`extends {base}` lists no methods");
+                cfg.add_base.entry(base.to_string()).or_default().extend(ms);
+            }
+        } else if removing {
+            cfg.remove.insert(body.to_string());
         } else {
-            cfg.add.insert(s.trim_start_matches('+').trim().to_string());
+            cfg.add.insert(body.to_string());
         }
     }
-    eprintln!("[lockdex] async dispatch: +{} -{} (on top of built-ins)", cfg.add.len(), cfg.remove.len());
+    eprintln!(
+        "[lockdex] async dispatch: +{} -{} names, +{} -{} hierarchy bases (on top of built-ins)",
+        cfg.add.len(), cfg.remove.len(), cfg.add_base.len(), cfg.remove_base.len()
+    );
     Ok(cfg)
 }
 
@@ -201,7 +237,7 @@ fn main() -> Result<()> {
             let g = graph::LockGraph::build(&an.edges, &an.all_locks);
             let rep = report::build_json(&an, &g);
             eprintln!(
-                "[lockdex] {} cycles; verifying those with <= {} locks against {}",
+                "[lockdex] {} SCC(s); verifying small cycles and tangle inversions with <= {} locks against {}",
                 rep.cycles.len(), max_locks, src_root.display()
             );
             let txt = verify::run(&rep, &an.paths, &src_root, max_locks, out_dir.as_deref());
@@ -298,7 +334,7 @@ fn outputs_summary(dir: &Path, rep: &report::JsonReport) -> String {
     let _ = writeln!(s, "outputs in {}:", dir.display());
     let entries: &[(&str, &str)] = &[
         ("report.txt", "the report — read this first (cycles, locks, file:line)"),
-        ("cycles.svg", "the small cycles, drawn (open in a browser)"),
+        ("cycles.svg", "the cycles drawn — small SCCs red, tangle inversions amber"),
         ("lockgraph.json", "full graph + findings, for tooling"),
         ("lockorder.pb.gz", "pprof — go tool pprof -http=: <dir>/lockorder.pb.gz"),
         ("methodlock.hprof", "Perfetto heap graph — drag into https://ui.perfetto.dev"),
@@ -338,9 +374,22 @@ fn write_artifacts(
 
     // Full graph DOT (for tooling) — written but NOT rendered: too many edges.
     std::fs::write(p("lockgraph.dot"), report::dot(g))?;
-    // Cycle subgraph DOT (small) — this is the one worth viewing; render to SVG.
+    // Cycle subgraph DOT (small cycles + tangle inversions) — the one worth
+    // viewing; render to SVG.
     let cyc = report::dot_cycles(g);
     std::fs::write(p("cycles.dot"), &cyc)?;
+    // Graphviz is pathologically slow past a few tens of thousands of edges; on
+    // such a graph leave the .dot for the user to render (nothing is dropped —
+    // the same data is in report.txt / lockgraph.json).
+    let cyc_edges = cyc.matches(" -> ").count();
+    if cyc_edges > 20_000 {
+        eprintln!(
+            "[lockdex] cycles.dot has {cyc_edges} edges — skipping the automatic SVG render \
+             (run `dot -Tsvg cycles.dot > cycles.svg` yourself, it may take a while)"
+        );
+        eprintln!("[lockdex] artifacts written to {}", dir.display());
+        return Ok(());
+    }
     eprintln!("[lockdex] rendering cycle SVG with graphviz (skip if dot is missing) ...");
     match std::process::Command::new("dot")
         .arg("-Tsvg")

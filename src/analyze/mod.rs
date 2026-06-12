@@ -223,6 +223,16 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         by_key.len(), ncalls, value_summaries.len(), t.elapsed().as_secs_f64()
     );
 
+    // --- hierarchy-aware async dispatch ---------------------------------------
+    // Extraction classifies dispatch by *name* only (`Handler.post`, `*Executor.
+    // execute`); here the dex type hierarchy is known, so a call on any subtype of
+    // a dispatcher base — a custom Handler, an Executor implementation with an
+    // arbitrary name — is reclassified as async too. The posted runnable does not
+    // run under the caller's locks, so every downstream consumer (order edges,
+    // must-hold guard credit, binder reach, verify paths) must sever there.
+    let nasync = mark_async_by_hierarchy(&mut by_key, &supertypes, cfg);
+    eprintln!("[lockdex] {nasync} call site(s) reclassified as async dispatch via the type hierarchy");
+
     // --- global indices + call graph (parallel resolution) -------------------
     let methods_by_namesig = index_namesig(&by_key);
     let instantiated: HashSet<String> =
@@ -396,6 +406,69 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
     );
 
     Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths, binder, races }
+}
+
+/// Mark calls that hit an async-dispatch method on a subtype of a dispatcher
+/// base (`android.os.Handler`, the `java.util.concurrent` executors, `Thread`,
+/// ... — see [`juc::ASYNC_BASES`], adjustable via `--async-dispatch`). Matching
+/// is on the *declared* receiver class of the call: it is async iff the declared
+/// class is, or transitively inherits from, a base and the method name is in
+/// that base's dispatch set. `cfg.remove` entries veto, same as for the
+/// name-based built-ins. Returns how many calls were reclassified.
+fn mark_async_by_hierarchy(
+    by_key: &mut HashMap<String, Summary>,
+    supertypes: &HashMap<String, HashSet<String>>,
+    cfg: &juc::AsyncConfig,
+) -> usize {
+    // class -> the dispatch method names that apply to it, through every base it
+    // equals or (transitively) inherits from. The walk seeds with the dex
+    // supertype closure and lets `base_hit` carry each name through the *known*
+    // JDK/Android chain, so `MyPool extends ThreadPoolExecutor` reaches
+    // `Executor.execute` even though no `java.util.concurrent` class is in the
+    // dex. Memoized per class; calls then test membership without cloning.
+    // every method name any base (built-in or user) could contribute.
+    let candidates: HashSet<&str> = juc::ASYNC_BASES
+        .iter()
+        .flat_map(|(_, ms)| ms.iter().copied())
+        .chain(cfg.add_base.values().flatten().map(|m| m.as_str()))
+        .collect();
+    let names_for = |class: &str| -> HashSet<String> {
+        let roots = std::iter::once(class).chain(
+            supertypes.get(class).into_iter().flat_map(|s| s.iter().map(|x| x.as_str())),
+        );
+        let mut names = HashSet::new();
+        for root in roots {
+            for m in &candidates {
+                if !names.contains(*m) && cfg.base_hit(root, m) {
+                    names.insert((*m).to_string());
+                }
+            }
+        }
+        names
+    };
+    let mut memo: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut n = 0;
+    for s in by_key.values_mut() {
+        for c in &mut s.calls {
+            if c.is_async {
+                continue;
+            }
+            if !memo.contains_key(&c.dclass) {
+                let names = names_for(&c.dclass);
+                memo.insert(c.dclass.clone(), names);
+            }
+            if !memo[&c.dclass].contains(&c.name) {
+                continue;
+            }
+            let simple = c.dclass.rsplit('.').next().unwrap_or(&c.dclass);
+            if juc::AsyncConfig::hit(&cfg.remove, &c.dclass, simple, &c.name) {
+                continue;
+            }
+            c.is_async = true;
+            n += 1;
+        }
+    }
+    n
 }
 
 /// Assemble one method's contribution to the lock-order graph (pure / parallel).
@@ -628,6 +701,119 @@ fn ground(lock: &Lock, class: &str, key: &str) -> Lock {
 /// the binder and race analyses ignore it.
 pub(super) fn is_local_lock(lock: &Lock) -> bool {
     matches!(lock.root, Root::Opaque(_) | Root::Alloc(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(dclass: &str, name: &str) -> RawCall {
+        RawCall {
+            kind: InvokeKind::Virtual,
+            dclass: dclass.to_string(),
+            name: name.to_string(),
+            sig: "(Ljava/lang/Runnable;)V".to_string(),
+            recv_type: None,
+            args: Vec::new(),
+            held: Vec::new(),
+            line: None,
+            is_async: false,
+        }
+    }
+
+    fn fixture(
+        calls: Vec<RawCall>,
+    ) -> (HashMap<String, Summary>, HashMap<String, HashSet<String>>) {
+        let mut by_key = HashMap::new();
+        by_key.insert(
+            "test.M.m:()V".to_string(),
+            Summary { key: "test.M.m:()V".to_string(), class: "test.M".to_string(), calls, ..Default::default() },
+        );
+        let mut supertypes = HashMap::new();
+        supertypes.insert(
+            "test.MyHandler".to_string(),
+            HashSet::from(["android.os.Handler".to_string(), "java.lang.Object".to_string()]),
+        );
+        supertypes.insert(
+            "test.WorkerPool".to_string(),
+            HashSet::from(["java.util.concurrent.Executor".to_string(), "java.lang.Object".to_string()]),
+        );
+        supertypes.insert(
+            "test.Plain".to_string(),
+            HashSet::from(["java.lang.Object".to_string()]),
+        );
+        (by_key, supertypes)
+    }
+
+    fn async_flags(by_key: &HashMap<String, Summary>) -> Vec<bool> {
+        by_key["test.M.m:()V"].calls.iter().map(|c| c.is_async).collect()
+    }
+
+    #[test]
+    fn handler_and_executor_subtypes_are_marked_async() {
+        let (mut by_key, sup) = fixture(vec![
+            call("test.MyHandler", "post"),
+            call("test.MyHandler", "sendMessageAtFrontOfQueue"),
+            call("test.WorkerPool", "execute"),
+            call("test.Plain", "execute"),       // not a dispatcher subtype
+            call("test.MyHandler", "handleMessage"), // not a dispatch method
+        ]);
+        let n = mark_async_by_hierarchy(&mut by_key, &sup, &juc::AsyncConfig::default());
+        assert_eq!(n, 3);
+        assert_eq!(async_flags(&by_key), vec![true, true, true, false, false]);
+    }
+
+    #[test]
+    fn declared_base_class_itself_matches() {
+        // framework not in the dex: the declared class IS the base, with no
+        // supertypes entry at all.
+        let (mut by_key, _) = fixture(vec![call("android.os.Handler", "postAtFrontOfQueue")]);
+        let n = mark_async_by_hierarchy(&mut by_key, &HashMap::new(), &juc::AsyncConfig::default());
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn remove_entry_vetoes_hierarchy_match() {
+        let (mut by_key, sup) = fixture(vec![call("test.MyHandler", "post")]);
+        let cfg = juc::AsyncConfig {
+            remove: HashSet::from(["MyHandler.post".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(mark_async_by_hierarchy(&mut by_key, &sup, &cfg), 0);
+        assert_eq!(async_flags(&by_key), vec![false]);
+    }
+
+    #[test]
+    fn remove_base_disables_a_builtin_base() {
+        let (mut by_key, sup) = fixture(vec![
+            call("test.MyHandler", "post"),
+            call("test.WorkerPool", "execute"),
+        ]);
+        let cfg = juc::AsyncConfig {
+            remove_base: HashSet::from(["android.os.Handler".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(mark_async_by_hierarchy(&mut by_key, &sup, &cfg), 1);
+        assert_eq!(async_flags(&by_key), vec![false, true]);
+    }
+
+    #[test]
+    fn add_base_extends_the_table() {
+        let (mut by_key, sup) = fixture(vec![call("test.Plain", "enqueue")]);
+        let mut sup = sup;
+        sup.insert(
+            "test.Plain".to_string(),
+            HashSet::from(["com.example.MyQueue".to_string()]),
+        );
+        let cfg = juc::AsyncConfig {
+            add_base: HashMap::from([(
+                "com.example.MyQueue".to_string(),
+                HashSet::from(["enqueue".to_string()]),
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(mark_async_by_hierarchy(&mut by_key, &sup, &cfg), 1);
+    }
 }
 
 
