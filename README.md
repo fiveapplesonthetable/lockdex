@@ -393,8 +393,11 @@ definition — `iget-object` (a field, incl. an outer class's `this$0.field`),
 `synchronized (svc.getLock())`, `synchronized ((Object) x)` and a local aliased to any
 of them all resolve through one mechanism, to the canonical lock *definition* (the
 lock-field alias pass collapses a field that merely holds a reference to a shared lock
-onto that shared lock). When the locked object is genuinely dynamic — an unknown method
-return, or a parameter supplied by an unknown caller — it is reported as an opaque lock
+onto that shared lock). A directly-locked object *parameter* is named by its declared
+class — its instance monitor, the same rendering `this` gets (this is a naming-only
+convenience in `resolve`; the deadlock graph still keeps parameter roots distinct so its
+soundness is unchanged). When the locked object is genuinely dynamic — an unknown method
+return, a per-call allocation, or a collection element — it is reported as an opaque lock
 rather than guessed.
 
 A location matches by source line plus file: pass a bare `File.java:LINE` or a full

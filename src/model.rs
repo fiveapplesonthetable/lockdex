@@ -142,6 +142,26 @@ impl Method {
             Some(self.registers.saturating_sub(self.ins))
         }
     }
+    /// (register, dotted class) for each object-typed parameter. Lets a
+    /// `synchronized(param)` on a known class resolve to that class's instance
+    /// monitor (the same `Recv` a `synchronized(this)` grounds to) instead of an
+    /// opaque parameter. Primitive/array params are skipped but still consume
+    /// their register slot(s) (`long`/`double` take two).
+    pub fn object_param_regs(&self) -> Vec<(Reg, String)> {
+        let mut reg = self.registers.saturating_sub(self.ins);
+        if !self.is_static() {
+            reg += 1; // skip `this`
+        }
+        let mut out = Vec::new();
+        for p in parse_param_descs(&self.sig) {
+            let wide = p == "J" || p == "D";
+            if p.starts_with('L') {
+                out.push((reg, descriptor_to_dotted(&p)));
+            }
+            reg += if wide { 2 } else { 1 };
+        }
+        out
+    }
     /// Source line for a code offset (largest position <= offset).
     pub fn line_at(&self, offset: u32) -> Option<u32> {
         let mut best = None;
@@ -310,4 +330,35 @@ pub fn descriptor_to_dotted(desc: &str) -> String {
     } else {
         d.to_string()
     }
+}
+
+/// Split a method signature's parameter list into per-parameter type descriptors
+/// (e.g. `(Lcom/foo/Bar;IJ)V` -> ["Lcom/foo/Bar;", "I", "J"]). Each `L...;` is one
+/// object param; `[` prefixes an array; the rest are primitives.
+fn parse_param_descs(sig: &str) -> Vec<String> {
+    let Some(start) = sig.find('(') else { return Vec::new() };
+    let Some(rel) = sig[start..].find(')') else { return Vec::new() };
+    let mut chars = sig[start + 1..start + rel].chars().peekable();
+    let mut out = Vec::new();
+    while chars.peek().is_some() {
+        let mut d = String::new();
+        while chars.peek() == Some(&'[') {
+            d.push(chars.next().unwrap());
+        }
+        match chars.next() {
+            Some('L') => {
+                d.push('L');
+                for ch in chars.by_ref() {
+                    d.push(ch);
+                    if ch == ';' {
+                        break;
+                    }
+                }
+            }
+            Some(x) => d.push(x),
+            None => break,
+        }
+        out.push(d);
+    }
+    out
 }

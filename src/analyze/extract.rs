@@ -221,7 +221,10 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
         let held = &held_in[i];
         match ev {
             Event::Acquire { lock, grounded, line, nonblocking } => {
-                s.acq_sites.push((grounded.clone(), line));
+                // Store the pre-ground lock so `resolve` can render an object
+                // parameter as its class (a naming-only nicety that must not reach
+                // the graph, where Param roots drive the ctor-alias pass).
+                s.acq_sites.push((lock.clone(), line));
                 emit_acquire(&mut s, m, held, lock, grounded, line, nonblocking);
             }
             Event::Call(mut rc) => {

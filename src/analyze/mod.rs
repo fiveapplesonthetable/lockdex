@@ -163,6 +163,19 @@ pub struct Acquisition {
     pub lock: String,
 }
 
+/// If `l` is a directly-locked object parameter, name it by its declared class
+/// (the same instance-monitor rendering `this` gets). Returns None for non-param
+/// or primitive-typed params, so the caller falls back to normal grounding.
+fn param_type_name(l: &Lock, m: Option<&Method>) -> Option<String> {
+    let crate::model::Root::Param(j) = l.root else { return None };
+    if !l.fields.is_empty() {
+        return None;
+    }
+    let m = m?;
+    let reg = m.registers.saturating_sub(m.ins) + j;
+    m.object_param_regs().into_iter().find(|(r, _)| *r == reg).map(|(_, t)| t)
+}
+
 /// Enough of the call graph to reconstruct, for an order edge `A -> B`, the
 /// shortest call chain from the method holding `A` to the method that acquires
 /// `B`. Built from the resolved (RTA) call graph and the mayAcquire fixpoint.
@@ -425,14 +438,22 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
 
     // Canonicalize every monitor-enter site (apply the lock-field alias map, same
     // as edges) so a contention FILE:LINE resolves to lockdex's canonical lock.
+    let method_by_key: HashMap<String, &Method> =
+        methods.iter().map(|m| (m.key(), *m)).collect();
     let mut acquisitions: Vec<Acquisition> = Vec::new();
     for s in by_key.values() {
-        for (g, line) in &s.acq_sites {
+        for (l, line) in &s.acq_sites {
+            // Naming-only nicety: an object parameter locked directly renders as
+            // that class's instance monitor (like `this`) instead of an opaque
+            // `#pN`. This never touches the graph — Param roots stay Param there,
+            // so the ctor-alias pass and distinct-opaque soundness are unaffected.
+            let lock = param_type_name(l, method_by_key.get(&s.key).copied())
+                .unwrap_or_else(|| canonicalize(&ground(l, &s.class, &s.key), &alias).name());
             acquisitions.push(Acquisition {
                 class: s.class.clone(),
                 method: s.key.clone(),
                 line: *line,
-                lock: canonicalize(g, &alias).name(),
+                lock,
             });
         }
     }
