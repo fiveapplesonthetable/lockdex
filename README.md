@@ -68,6 +68,18 @@ that to jars whose name contains the substring, e.g. `--scope services`.
 Input can also be any single `.dex`, or a `.jar`/`.apk` (multidex is handled —
 every `classes*.dex` is read and merged so calls resolve across dexes).
 
+### What system_server is made of (it is not just services.jar)
+
+system_server runs code from ~15 dex jars staged in `out/soong/system_server_dexjars/`:
+`services.jar` is the big one (AMS, WMS, PMS, PowerManager, …), plus `service-*.jar` and
+`com.android.location.provider.jar` for the apex-hosted services. Point lockdex at the
+**directory** (or the out root) so all of them are merged and calls / lock identity resolve
+across jar boundaries — `services.jar` alone is a large but incomplete subset.
+
+`android.os.*` / `android.util.*` / `android.content.res.*` (e.g. `MessageQueue`) are on the
+**boot** classpath in `framework.jar` (`out/target/product/*/system/framework/framework.jar`),
+not in `system_server_dexjars/`. Add it as the input when you need those locks.
+
 `dexdump` is the only external dependency. If it is not on `PATH`, point at it
 with `LOCKDEX_DEXDUMP=/path/to/dexdump`. `dot` (Graphviz) is used to render an SVG
 if present.
@@ -373,7 +385,9 @@ path.
 table — which lock is actually taken there?
 
 ```sh
-lockdex resolve "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+# point at the whole system_server jar set (not just services.jar) so every
+# com.android.server.* class is covered; add framework.jar for android.* locks.
+lockdex resolve "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars" \
     ActivityManagerService.java:1701 \
     LocalDisplayAdapter.java:1002 \
     frameworks/base/services/core/java/com/android/server/wm/AccessibilityController.java:240
@@ -402,6 +416,34 @@ rather than guessed.
 
 A location matches by source line plus file: pass a bare `File.java:LINE` or a full
 path (the top-level class fixes the file, so nested/anonymous classes resolve correctly).
+
+Feed the jar(s) that own the classes you are resolving: the `system_server_dexjars`
+directory covers all `com.android.server.*` (across `services.jar` + the `service-*.jar`);
+`android.os.*` / `android.util.*` / `android.content.res.*` sites need `framework.jar` (a
+separate run, or pass it as the input). An unresolvable site prints `(unresolved)` — the
+most common cause is pointing at the wrong jar, not a bug.
+
+### End to end from a Perfetto monitor-contention trace
+
+The `blocked_src` column of the `android_monitor_contention` table is a `File.java:LINE`
+sitting on a `monitor-enter`. Export those and resolve them in one run (the dex is parsed
+once, so batch all the sites into a single command):
+
+```sh
+# 1. pull the RUNNING dex so its line table matches the trace's build exactly
+adb pull /system/framework/services.jar
+
+# 2. list the contention sites with trace_processor
+printf 'INCLUDE PERFETTO MODULE android.monitor_contention;\n%s\n' \
+  "SELECT DISTINCT blocked_src FROM android_monitor_contention
+   WHERE blocked_src GLOB '*.java:[0-9]*';" > sites.sql
+trace_processor_shell trace.perfetto-trace -q sites.sql | tr -d '"' | tail -n +2 > sites.txt
+
+# 3. resolve them all (same build -> exact; add --fuzz/--method if drifted)
+lockdex resolve services.jar $(cat sites.txt)
+```
+
+Same build as the trace gives exact hits; a foreign build drifts (use the flags below).
 
 ### When the line has drifted
 
@@ -536,6 +578,18 @@ reporting false deadlocks rather than toward completeness:
 - Native (JNI) monitors and cross-process Binder reentrancy are out of scope.
 
 Read every reported cycle against the source before changing any locking.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `dexdump: command not found` / parse produces 0 classes | `dexdump` not on `PATH`. Use an AOSP host build (`out/host/linux-x86/bin/dexdump`) or SDK build-tools, or set `LOCKDEX_DEXDUMP=/path/to/dexdump`. |
+| `resolve` prints `(unresolved)` | Usually the site's class is in a jar you didn't pass. `com.android.server.*` → point at `out/soong/system_server_dexjars/`; `android.*` → `framework.jar`. If the class *is* present, the line drifted — see below. |
+| `resolve` gives a wrong/`$N` (anonymous) lock | The dex's line table is from a different build than the trace. Pull the *running* dex (`adb pull /system/framework/services.jar`), or use `--method <substr>` (drift-immune), `--fuzz N` (nearest line), `--if-unique`. |
+| `resolve` shows `?@…#pN` | An opaque parameter/dynamic object. Object params are named by class when the type is known; a truly dynamic lock (unknown return, per-call `new`, collection element) stays opaque by design (it will not guess). |
+| A whole component looks like one giant cycle | Expected for the AMS/ATMS/WMS global-lock tangle. It is a genuinely coupled hierarchy, not one bug — read the inversions individually. |
+| `cargo build` fails | Needs a stable Rust toolchain (`rustup default stable`). No other build deps. |
+| Analysis is slow / seems stuck | `dexdump` parsing of a 20 MB+ jar is the slow step (tens of seconds); it is single external process, not hung. Batch multiple `resolve` locations into one invocation so the dex is parsed once. |
 
 ## License
 
