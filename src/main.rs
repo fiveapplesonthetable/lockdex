@@ -60,6 +60,18 @@ enum Cmd {
         /// FILE:LINE locations to resolve (repeatable)
         #[arg(required = true)]
         locs: Vec<String>,
+        /// tolerate line drift: if no monitor-enter sits exactly on the line,
+        /// snap to the nearest one within this many lines (0 = exact only).
+        #[arg(long, default_value = "0")]
+        fuzz: u32,
+        /// anchor to a method (substring of its key) instead of trusting the
+        /// line — survives line drift. Pair with the contention's method name.
+        #[arg(long)]
+        method: Option<String>,
+        /// last resort when the line can't be matched: if the file (after any
+        /// --method filter) takes exactly one distinct lock, return it.
+        #[arg(long)]
+        if_unique: bool,
         /// narrow a Soong out dir to jars whose name contains this (e.g. services)
         #[arg(long)]
         scope: Option<String>,
@@ -202,7 +214,7 @@ fn load_async_dispatch(path: Option<&Path>) -> Result<juc::AsyncConfig> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Resolve { input, locs, scope } => {
+        Cmd::Resolve { input, locs, fuzz, method, if_unique, scope } => {
             let set = input::resolve(&input, scope.as_deref())?;
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump...", set.files.len());
             let dex = input::parse_all(&set)?;
@@ -218,29 +230,59 @@ fn main() -> Result<()> {
                     eprintln!("skip {loc}: expected FILE:LINE");
                     continue;
                 };
-                let Ok(line) = line_s.trim().parse::<u32>() else {
+                let Ok(line) = line_s.trim().parse::<i64>() else {
                     eprintln!("skip {loc}: line is not a number");
                     continue;
                 };
-                let mut locks: Vec<String> = Vec::new();
-                for acq in &an.acquisitions {
-                    if acq.line != Some(line) {
-                        continue;
-                    }
-                    let rp = relpath(&acq.class);
-                    let hit = if want_file.contains('/') {
+                // Monitor-enters in this file, optionally anchored to a method
+                // (the drift-immune key). File match: full path suffix, or basename.
+                let cands: Vec<&analyze::Acquisition> = an.acquisitions.iter().filter(|a| {
+                    let rp = relpath(&a.class);
+                    let file_ok = if want_file.contains('/') {
                         want_file.ends_with(&rp)
                     } else {
                         rp.rsplit('/').next() == Some(want_file)
                     };
-                    if hit && !locks.contains(&acq.lock) {
-                        locks.push(acq.lock.clone());
+                    let method_ok = method.as_deref().is_none_or(|m| a.method.contains(m));
+                    file_ok && method_ok && a.line.is_some()
+                }).collect();
+
+                let mut hits: Vec<String>;
+                let mut note = String::new();
+
+                // 1) exact line.
+                hits = cands.iter().filter(|a| a.line == Some(line as u32)).map(|a| a.lock.clone()).collect();
+
+                // 2) nearest monitor-enter within the fuzz window.
+                if hits.is_empty() && fuzz > 0 {
+                    if let Some((_, nl)) = cands.iter()
+                        .filter_map(|a| a.line.map(|l| ((l as i64 - line).abs(), l)))
+                        .filter(|(d, _)| *d <= fuzz as i64)
+                        .min_by_key(|(d, _)| *d)
+                    {
+                        hits = cands.iter().filter(|a| a.line == Some(nl)).map(|a| a.lock.clone()).collect();
+                        note = format!("  [snapped {:+} line(s) to {nl}]", nl as i64 - line);
                     }
                 }
-                if locks.is_empty() {
-                    println!("{loc}\t(no monitor-enter resolved here)");
+
+                // 3) unambiguous fallback: a single distinct lock in scope.
+                if hits.is_empty() && if_unique {
+                    let mut distinct: Vec<String> = cands.iter().map(|a| a.lock.clone()).collect();
+                    distinct.sort();
+                    distinct.dedup();
+                    if distinct.len() == 1 {
+                        hits = distinct;
+                        note = format!("  [unambiguous: sole lock in {}]",
+                            if method.is_some() { "method" } else { "file" });
+                    }
+                }
+
+                hits.sort();
+                hits.dedup();
+                if hits.is_empty() {
+                    println!("{loc}\t(unresolved)");
                 } else {
-                    println!("{loc}\t{}", locks.join(", "));
+                    println!("{loc}\t{}{note}", hits.join(", "));
                 }
             }
         }

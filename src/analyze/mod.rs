@@ -157,6 +157,8 @@ pub struct Analysis {
 /// (`Outer$Inner`); the top-level class fixes the source file.
 pub struct Acquisition {
     pub class: String,
+    /// holder method key — the stable anchor when line numbers drift.
+    pub method: String,
     pub line: Option<u32>,
     pub lock: String,
 }
@@ -428,6 +430,7 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         for (g, line) in &s.acq_sites {
             acquisitions.push(Acquisition {
                 class: s.class.clone(),
+                method: s.key.clone(),
                 line: *line,
                 lock: canonicalize(g, &alias).name(),
             });

@@ -399,8 +399,34 @@ rather than guessed.
 
 A location matches by source line plus file: pass a bare `File.java:LINE` or a full
 path (the top-level class fixes the file, so nested/anonymous classes resolve correctly).
-The dex's line table must come from the same build as the contention trace — line
-numbers drift across revisions.
+
+### When the line has drifted
+
+The dex's line table must come from the same build as the contention trace. When they
+diverge, three flags recover the answer without guessing (the default stays exact —
+a miss prints `(unresolved)`):
+
+- `--method <substr>` anchors to the holder method (a substring of its key) instead of
+  trusting the line. The method name is the *stable* key across edits, and a
+  monitor-contention row already carries it (`blocking_method`), so this is the
+  strongest recovery.
+- `--fuzz N` snaps to the nearest monitor-enter within `N` lines when none sits exactly
+  on the line, and reports the offset (`[snapped -4 line(s) to 1701]`).
+- `--if-unique` is the last resort: if the file — or, with `--method`, that method —
+  takes exactly one distinct lock, return it (`[unambiguous: sole lock in file]`).
+
+```sh
+# line drifted a few lines: snap to the real monitor-enter nearby
+lockdex resolve services.jar ActivityManagerService.java:1705 --fuzz 6
+#   ActivityManagerService.java:1705  ...ActivityManagerService.mProcLock  [snapped -4 line(s) to 1701]
+
+# line unusable, but anchor on the method the contention names
+lockdex resolve services.jar SomeService.java:0 --method SomeService.doWork --if-unique
+```
+
+Structural divergence (the code at that spot changed entirely, not just shifted) can't
+be recovered by line fuzz — anchor on `--method` if it survived, otherwise use the dex
+from the same build as the trace.
 
 ## Tuning the async-dispatch list
 
