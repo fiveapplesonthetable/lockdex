@@ -103,6 +103,10 @@ struct Summary {
     intra_edges: Vec<Edge>,
     first_acquire: Vec<Lock>,
     acquires: Vec<Lock>,
+    /// every `monitor-enter` in this method: (grounded lock, source line).
+    /// Unlike `intra_edges`, this keeps top-level acquisitions (nothing held
+    /// yet) too — the common shape a contention site lands on.
+    acq_sites: Vec<(Lock, Option<u32>)>,
     calls: Vec<RawCall>,
     field_access: Vec<FieldAccess>,
     value_summary: Option<Lock>,
@@ -143,6 +147,18 @@ pub struct Analysis {
     /// fields whose inferred guard lock is applied inconsistently, with the
     /// accesses that violate it.
     pub races: RaceReport,
+    /// every monitor-enter site, canonically named. Powers `lockdex resolve`:
+    /// map a contention FILE:LINE to the lock actually taken there.
+    pub acquisitions: Vec<Acquisition>,
+}
+
+/// A resolved `synchronized` / `monitor-enter` site: the canonical lock taken,
+/// the holder class, and the source line. `class` may be a nested class
+/// (`Outer$Inner`); the top-level class fixes the source file.
+pub struct Acquisition {
+    pub class: String,
+    pub line: Option<u32>,
+    pub lock: String,
 }
 
 /// Enough of the call graph to reconstruct, for an order edge `A -> B`, the
@@ -405,7 +421,20 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         races.fields.len(), tr.elapsed().as_secs_f64()
     );
 
-    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths, binder, races }
+    // Canonicalize every monitor-enter site (apply the lock-field alias map, same
+    // as edges) so a contention FILE:LINE resolves to lockdex's canonical lock.
+    let mut acquisitions: Vec<Acquisition> = Vec::new();
+    for s in by_key.values() {
+        for (g, line) in &s.acq_sites {
+            acquisitions.push(Acquisition {
+                class: s.class.clone(),
+                line: *line,
+                lock: canonicalize(g, &alias).name(),
+            });
+        }
+    }
+
+    Analysis { edges, all_locks, method_count: by_key.len(), method_edges, paths, binder, races, acquisitions }
 }
 
 /// Mark calls that hit an async-dispatch method on a subtype of a dispatcher

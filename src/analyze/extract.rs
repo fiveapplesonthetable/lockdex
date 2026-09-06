@@ -221,6 +221,7 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
         let held = &held_in[i];
         match ev {
             Event::Acquire { lock, grounded, line, nonblocking } => {
+                s.acq_sites.push((grounded.clone(), line));
                 emit_acquire(&mut s, m, held, lock, grounded, line, nonblocking);
             }
             Event::Call(mut rc) => {

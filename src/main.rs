@@ -50,6 +50,20 @@ enum Cmd {
         #[arg(long)]
         async_dispatch: Option<PathBuf>,
     },
+    /// Resolve monitor-contention sites to the canonical lock taken there.
+    /// Give one or more FILE:LINE (e.g. `ActivityManagerService.java:1701`, or a
+    /// full path). Resolution is DEX register dataflow — no source, no rules —
+    /// so `this`, fields, outer `this$0` fields, getters and aliases all resolve.
+    Resolve {
+        /// .dex, .jar/.apk (multidex), or a Soong `out` directory
+        input: PathBuf,
+        /// FILE:LINE locations to resolve (repeatable)
+        #[arg(required = true)]
+        locs: Vec<String>,
+        /// narrow a Soong out dir to jars whose name contains this (e.g. services)
+        #[arg(long)]
+        scope: Option<String>,
+    },
     /// Analyze, then pull the source for each candidate cycle and print a verdict.
     Verify {
         /// .dex, .jar/.apk (multidex), or a Soong `out` directory
@@ -188,6 +202,48 @@ fn load_async_dispatch(path: Option<&Path>) -> Result<juc::AsyncConfig> {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
+        Cmd::Resolve { input, locs, scope } => {
+            let set = input::resolve(&input, scope.as_deref())?;
+            eprintln!("[lockdex] parsing {} dex file(s) with dexdump...", set.files.len());
+            let dex = input::parse_all(&set)?;
+            let an = analyze::analyze(&dex, &load_async_dispatch(None)?);
+
+            // The top-level class fixes the source file; strip any nested `$Inner`.
+            fn relpath(class: &str) -> String {
+                let top = class.split('$').next().unwrap_or(class);
+                format!("{}.java", top.replace('.', "/"))
+            }
+            for loc in &locs {
+                let Some((want_file, line_s)) = loc.rsplit_once(':') else {
+                    eprintln!("skip {loc}: expected FILE:LINE");
+                    continue;
+                };
+                let Ok(line) = line_s.trim().parse::<u32>() else {
+                    eprintln!("skip {loc}: line is not a number");
+                    continue;
+                };
+                let mut locks: Vec<String> = Vec::new();
+                for acq in &an.acquisitions {
+                    if acq.line != Some(line) {
+                        continue;
+                    }
+                    let rp = relpath(&acq.class);
+                    let hit = if want_file.contains('/') {
+                        want_file.ends_with(&rp)
+                    } else {
+                        rp.rsplit('/').next() == Some(want_file)
+                    };
+                    if hit && !locks.contains(&acq.lock) {
+                        locks.push(acq.lock.clone());
+                    }
+                }
+                if locks.is_empty() {
+                    println!("{loc}\t(no monitor-enter resolved here)");
+                } else {
+                    println!("{loc}\t{}", locks.join(", "));
+                }
+            }
+        }
         Cmd::Analyze { input, format, out_dir, scope, async_dispatch } => {
             let t0 = std::time::Instant::now();
             let set = input::resolve(&input, scope.as_deref())?;

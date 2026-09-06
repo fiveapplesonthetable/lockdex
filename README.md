@@ -366,6 +366,42 @@ poisons the intersection). So treat it as a ranked worklist whose precision is
 exactly the call graph's: start at the top and check the public methods on the
 path.
 
+## Resolving a contention site to its lock
+
+`lockdex resolve` answers a narrow question: given a source location that sits on a
+`synchronized` — e.g. a `blocking_src`/`blocked_src` from a Perfetto monitor-contention
+table — which lock is actually taken there?
+
+```sh
+lockdex resolve "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars/services.jar" \
+    ActivityManagerService.java:1701 \
+    LocalDisplayAdapter.java:1002 \
+    frameworks/base/services/core/java/com/android/server/wm/AccessibilityController.java:240
+```
+
+```
+ActivityManagerService.java:1701      com.android.server.am.ActivityManagerService.mProcLock
+LocalDisplayAdapter.java:1002         com.android.server.display.DisplayAdapter.mSyncRoot
+.../AccessibilityController.java:240   com.android.server.wm.ActivityTaskManagerService.mGlobalLock
+```
+
+There are no source-level rules here: resolution is the same DEX register dataflow the
+deadlock analysis uses. The `monitor-enter` operand register is traced back to its
+definition — `iget-object` (a field, incl. an outer class's `this$0.field`),
+`sget-object` (a static), `move-object` (a local alias), a method return (a getter),
+`check-cast` — so `synchronized (this)`, `synchronized (mLock)`,
+`synchronized (svc.getLock())`, `synchronized ((Object) x)` and a local aliased to any
+of them all resolve through one mechanism, to the canonical lock *definition* (the
+lock-field alias pass collapses a field that merely holds a reference to a shared lock
+onto that shared lock). When the locked object is genuinely dynamic — an unknown method
+return, or a parameter supplied by an unknown caller — it is reported as an opaque lock
+rather than guessed.
+
+A location matches by source line plus file: pass a bare `File.java:LINE` or a full
+path (the top-level class fixes the file, so nested/anonymous classes resolve correctly).
+The dex's line table must come from the same build as the contention trace — line
+numbers drift across revisions.
+
 ## Tuning the async-dispatch list
 
 Held locks are *severed* at calls that defer work to another thread, so a lock
