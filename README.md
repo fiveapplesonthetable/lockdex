@@ -405,14 +405,30 @@ definition — `iget-object` (a field, incl. an outer class's `this$0.field`),
 `sget-object` (a static), `move-object` (a local alias), a method return (a getter),
 `check-cast` — so `synchronized (this)`, `synchronized (mLock)`,
 `synchronized (svc.getLock())`, `synchronized ((Object) x)` and a local aliased to any
-of them all resolve through one mechanism, to the canonical lock *definition* (the
-lock-field alias pass collapses a field that merely holds a reference to a shared lock
-onto that shared lock). A directly-locked object *parameter* is named by its declared
-class — its instance monitor, the same rendering `this` gets (this is a naming-only
-convenience in `resolve`; the deadlock graph still keeps parameter roots distinct so its
-soundness is unchanged). When the locked object is genuinely dynamic — an unknown method
-return, a per-call allocation, or a collection element — it is reported as an opaque lock
-rather than guessed.
+of them all resolve through one mechanism, to the canonical lock *definition*.
+
+**Injected locks resolve to their root.** A field that merely holds a reference to
+another object's lock is followed to that object, interprocedurally. `this.f = param`
+(in *any* method — a constructor, a setter, a `super(...)` call) makes the field an
+alias of that parameter, and the parameter is resolved to the concrete argument passed
+at its call sites, transitively. This is a standard parameter/copy-propagation dataflow,
+solved as a monotone worklist to its least fixpoint, so constructor injection, setter
+injection and inheritance threading are one algorithm with no special cases. In practice
+that means `synchronized (mService)` in `BroadcastController` / `BroadcastQueue` /
+`ProcessList` all resolve to `com.android.server.am.ActivityManagerService`, and the many
+WM classes that lock `mService.mGlobalLock` collapse onto the single
+`ActivityTaskManagerService.mGlobalLock`. It is evidence-driven: a field is only merged
+when its assignments resolve to *one* concrete object; a dedicated lock (`mLock = new
+Object()`) has no such injection and stays itself, and conflicting assignments stay
+distinct (sound — it never invents a merge).
+
+A directly-locked object *parameter* is named by its declared class — its instance
+monitor, the same rendering `this` gets (a naming-only convenience in `resolve`; the
+deadlock graph keeps parameter roots distinct, so its soundness is unchanged). When the
+locked object is genuinely out of the propagation's reach — a method *return value*, a
+per-call allocation, a collection or array element, or a field injected only by callers
+outside the analyzed dex — it is left unresolved / opaque rather than guessed. So the
+answer is a real definition or nothing; it is never a wrong one.
 
 A location matches by source line plus file: pass a bare `File.java:LINE` or a full
 path (the top-level class fixes the file, so nested/anonymous classes resolve correctly).
