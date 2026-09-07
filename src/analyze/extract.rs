@@ -99,23 +99,27 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                     } else if regs.get(src).map(|l| matches!(l.root, Root::This)).unwrap_or(false) {
                         s.ctor_captures.push((fkey, 0));
                     }
-                    if let Some(v) = regs.get(src) {
-                        if matches!(v.root, Root::Recv(_) | Root::Static(_)) && !v.fields.is_empty() {
-                            let key = format!("{}.{}", class, field);
-                            if v.name() != key {
-                                s.field_aliases.push((key, v.clone()));
-                            }
-                        }
-                    }
                 }
-                // `this.field = formal` in ANY method: the field aliases that
-                // formal, resolved interprocedurally later. Guarded to `this` so
-                // it is genuinely this object's field.
+                // `this.field = <value>` in ANY method (guarded to `this` so it is
+                // genuinely this object's field):
+                //   - value is a formal        -> field aliases that formal, resolved
+                //                                 interprocedurally (`param_stores`);
+                //   - value is another field / a static (`this.f = svc.getLock()` or
+                //     `this.f = mOther`)        -> field aliases that object directly
+                //                                 (`field_aliases`).
                 if regs.get(base).is_some_and(|l| matches!(l.root, Root::This)) {
-                    match regs.get(src).map(|l| l.root.clone()) {
-                        Some(Root::Param(idx)) => s.param_stores.push((format!("{class}.{field}"), idx)),
-                        Some(Root::This) => s.param_stores.push((format!("{class}.{field}"), 0)),
-                        _ => {}
+                    let key = format!("{class}.{field}");
+                    if let Some(v) = regs.get(src).cloned() {
+                        match &v.root {
+                            Root::Param(idx) => s.param_stores.push((key, *idx)),
+                            Root::This => s.param_stores.push((key, 0)),
+                            Root::Recv(_) | Root::Static(_)
+                                if !v.fields.is_empty() && v.name() != key =>
+                            {
+                                s.field_aliases.push((key, v));
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 if let Some(Root::Alloc(site)) = regs.get(src).map(|l| l.root.clone()) {

@@ -422,13 +422,17 @@ when its assignments resolve to *one* concrete object; a dedicated lock (`mLock 
 Object()`) has no such injection and stays itself, and conflicting assignments stay
 distinct (sound — it never invents a merge).
 
-A directly-locked object *parameter* is named by its declared class — its instance
-monitor, the same rendering `this` gets (a naming-only convenience in `resolve`; the
-deadlock graph keeps parameter roots distinct, so its soundness is unchanged). When the
-locked object is genuinely out of the propagation's reach — a method *return value*, a
-per-call allocation, a collection or array element, or a field injected only by callers
-outside the analyzed dex — it is left unresolved / opaque rather than guessed. So the
-answer is a real definition or nothing; it is never a wrong one.
+A directly-locked object *parameter* (`synchronized(param)`) is resolved the same way:
+the parameter is propagated to the concrete object bound at the method's call sites, and
+only when the callers diverge does it fall back to naming the parameter's declared class
+(its instance monitor). This is a naming-only convenience in `resolve`; the deadlock graph
+keeps parameter roots distinct, so its soundness is unchanged.
+
+When the locked object is genuinely out of the propagation's reach — a per-call
+allocation, a collection or array element (`mLocks.get(k)`), a value returned through a
+path with no stable summary, or a field injected only by callers outside the analyzed dex
+— it is left unresolved / opaque rather than guessed. So the answer is a real definition
+or nothing; it is never a wrong one.
 
 A location matches by source line plus file: pass a bare `File.java:LINE` or a full
 path (the top-level class fixes the file, so nested/anonymous classes resolve correctly).

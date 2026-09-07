@@ -279,6 +279,23 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         by_key.values().flat_map(|s| s.allocs.iter().map(|(_, t)| t.clone())).collect();
     let ctor_captures = index_ctor_captures(&by_key);
     let capture_map = build_capture_map(&by_key, &ctor_captures);
+    // Interprocedural injection resolver (parameter/copy propagation over the call
+    // graph). Seed the fixpoint with the fields it must resolve AND every
+    // `synchronized(param)` operand, solve once, and reuse the solution for both
+    // the alias map (b) below and for naming parameter-locks in the acquisitions.
+    let injector = Injector::build(&by_key);
+    let inj_solution = {
+        let mut seeds: Vec<(&str, u32)> =
+            injector.field_stores.values().flatten().copied().collect();
+        for s in by_key.values() {
+            for (l, _) in &s.acq_sites {
+                if let Root::Param(j) = l.root {
+                    seeds.push((s.key.as_str(), j));
+                }
+            }
+        }
+        injector.solve(&seeds)
+    };
     // lock-field aliases: `Class.field` -> the shared lock it actually names,
     // learned from how the field is assigned. Two sources:
     //   (a) direct, in the field's `<init>`: `this.f = service.getLock()` / another
@@ -308,11 +325,8 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
         // formal. Resolve it by parameter/copy propagation over all call sites
         // (`Injector`). Constructors, setters and `super(...)` are just call sites,
         // so ctor/setter/inheritance injection all fall out of one algorithm.
-        {
-            let inj = Injector::build(&by_key);
-            for (field, v) in inj.resolve_all() {
-                note(field, Some(v), &mut seen);
-            }
+        for (field, v) in injector.resolve_fields(&inj_solution) {
+            note(field, Some(v), &mut seen);
         }
         // (c) singleton self-monitor: a class allocated exactly once and stored in a
         // single field is `owner.field` from outside and `this` from inside. Unify
@@ -450,11 +464,15 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
     let mut acquisitions: Vec<Acquisition> = Vec::new();
     for s in by_key.values() {
         for (l, line) in &s.acq_sites {
-            // Naming-only nicety: an object parameter locked directly renders as
-            // that class's instance monitor (like `this`) instead of an opaque
-            // `#pN`. This never touches the graph — Param roots stay Param there,
-            // so the ctor-alias pass and distinct-opaque soundness are unaffected.
-            let lock = param_type_name(l, method_by_key.get(&s.key).copied())
+            // Naming a `synchronized(param)`: first try to resolve the parameter to
+            // the concrete object bound at the method's call sites (same fixpoint);
+            // else fall back to the parameter's declared class (its instance
+            // monitor); else ground+canonicalize. This is naming-only — the graph
+            // keeps Param roots distinct, so its soundness is unaffected.
+            let lock = injector
+                .resolve_param_lock(s.key.as_str(), l, &inj_solution)
+                .map(|obj| canonicalize(&obj, &alias).name())
+                .or_else(|| param_type_name(l, method_by_key.get(&s.key).copied()))
                 .unwrap_or_else(|| canonicalize(&ground(l, &s.class, &s.key), &alias).name());
             acquisitions.push(Acquisition {
                 class: s.class.clone(),
@@ -842,12 +860,14 @@ impl<'a> Injector<'a> {
         acc
     }
 
-    /// Least-fixpoint solve: gather the reachable formals and their dependency
-    /// edges, then run a monotone worklist to convergence.
-    fn solve(&self) -> HashMap<Formal<'a>, Res> {
+    /// Least-fixpoint solve: gather the reachable formals (the field stores plus
+    /// any `extra_seeds`, e.g. `synchronized(param)` operands) and their
+    /// dependency edges, then run a monotone worklist to convergence.
+    fn solve(&self, extra_seeds: &[Formal<'a>]) -> HashMap<Formal<'a>, Res> {
         let mut vars: HashSet<Formal> = HashSet::new();
         let mut rev: HashMap<Formal, Vec<Formal>> = HashMap::new(); // dep -> readers
         let mut stack: Vec<Formal> = self.field_stores.values().flatten().copied().collect();
+        stack.extend_from_slice(extra_seeds);
         while let Some((m, i)) = stack.pop() {
             if !vars.insert((m, i)) {
                 continue;
@@ -875,9 +895,19 @@ impl<'a> Injector<'a> {
         f
     }
 
+    /// Resolve a `synchronized(param)` operand to the concrete object bound at the
+    /// method's call sites, if it resolves to one. `None` for a non-parameter lock
+    /// or one that does not resolve (the caller then names it by its type).
+    fn resolve_param_lock(&self, method: &'a str, l: &Lock, f: &HashMap<Formal<'a>, Res>) -> Option<Lock> {
+        let Root::Param(j) = l.root else { return None };
+        match f.get(&(method, j)) {
+            Some(Res::Val(base)) => Some(base.append(&l.fields, l.mode)),
+            _ => None,
+        }
+    }
+
     /// Every field that resolves to a single concrete object other than itself.
-    fn resolve_all(&self) -> Vec<(String, Lock)> {
-        let f = self.solve();
+    fn resolve_fields(&self, f: &HashMap<Formal<'a>, Res>) -> Vec<(String, Lock)> {
         let mut out = Vec::new();
         for (field, stores) in &self.field_stores {
             let mut acc = Res::Bottom;
