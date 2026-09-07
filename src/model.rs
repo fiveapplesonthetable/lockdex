@@ -231,9 +231,11 @@ pub struct Lock {
     pub mode: Mode,
 }
 
-/// Maximum access-path length (RacerD-style k=3 keeps it bounded; longer paths
-/// truncate to a distinct opaque so they never spuriously merge).
-pub const MAX_AP: usize = 3;
+/// Maximum access-path length. A finite bound keeps the lock domain finite (so the
+/// analysis terminates on cyclic field chains); longer paths truncate to a distinct
+/// opaque, so they never spuriously merge. Set generously — real `synchronized`
+/// operands are 0-2 hops, so this only ever trims pathological chains.
+pub const MAX_AP: usize = 10;
 
 impl Lock {
     pub fn new(root: Root) -> Self {
