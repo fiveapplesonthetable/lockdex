@@ -231,14 +231,15 @@ pub struct Lock {
     pub mode: Mode,
 }
 
-/// Maximum access-path length (RacerD-style k=3). This bound is load-bearing for
-/// *performance*, not just termination: as locks flow through calls their access
-/// paths grow by substitution, and the cap is what keeps the interprocedural
-/// fixpoint domain small. Raising it (e.g. to 10) is still sound and terminating
-/// but blows the lock set up geometrically on a large component like system_server.
-/// Longer paths truncate to a distinct opaque, so they never spuriously merge. Real
-/// `synchronized` operands are 0-2 hops, so k=3 costs no real precision.
-pub const MAX_AP: usize = 3;
+/// Maximum access-path length (RacerD-style k). A path that grows past this many
+/// hops truncates to a distinct opaque, so it never spuriously merges with another
+/// lock. The bound also guarantees the interprocedural fixpoint domain stays finite:
+/// paths grow by substitution at call sites, so without a cap the lattice height is
+/// unbounded. On services.jar k=3 and k=10 measure identically (2193 locks, 25
+/// fixpoint rounds, ~25s either way) — real `synchronized` operands are 0-2 hops, so
+/// the higher cap buys precision headroom with no measured cost here. It remains the
+/// knob to lower first if a larger component ever makes the fixpoint domain explode.
+pub const MAX_AP: usize = 10;
 
 impl Lock {
     pub fn new(root: Root) -> Self {
