@@ -30,6 +30,7 @@ pub mod juc;
 pub mod model;
 pub mod races;
 pub mod report;
+pub mod resolve;
 pub mod source;
 pub mod verify;
 

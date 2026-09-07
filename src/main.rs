@@ -16,7 +16,9 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use lockdex::resolve::{Lookup, ResolveIndex};
 use lockdex::{analyze, binder, export, graph, input, juc, races, report, verify};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -75,6 +77,43 @@ enum Cmd {
         /// narrow a Soong out dir to jars whose name contains this (e.g. services)
         #[arg(long)]
         scope: Option<String>,
+    },
+    /// Build a small, reusable resolve index once (the slow dexdump + fixpoint),
+    /// so later `query` calls answer FILE:LINE lookups in milliseconds without
+    /// re-analyzing. The index is a JSON projection of just the monitor-enter
+    /// sites — independent of the input jars and safe to cache/ship.
+    Index {
+        /// .dex, .jar/.apk (multidex), or a Soong `out` directory
+        input: PathBuf,
+        /// where to write the index (e.g. locks.idx.json)
+        #[arg(long, short = 'o')]
+        out: PathBuf,
+        /// narrow a Soong out dir to jars whose name contains this (e.g. services)
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    /// Resolve FILE:LINE sites against a prebuilt `index` (see `lockdex index`).
+    /// Loads in milliseconds and answers millions of queries cheaply — pass them
+    /// as args and/or stream them on stdin (one FILE:LINE per line).
+    Query {
+        /// index file written by `lockdex index`
+        index: PathBuf,
+        /// FILE:LINE locations to resolve (repeatable); optional with --stdin
+        locs: Vec<String>,
+        /// also read FILE:LINE queries from stdin, one per line (`#` comments and
+        /// blank lines ignored) — the path for millions of queries.
+        #[arg(long)]
+        stdin: bool,
+        /// tolerate line drift: snap to the nearest monitor-enter within N lines.
+        #[arg(long, default_value = "0")]
+        fuzz: u32,
+        /// anchor to a method (substring of its key) instead of trusting the line.
+        #[arg(long)]
+        method: Option<String>,
+        /// last resort: if the file (after --method) takes exactly one distinct
+        /// lock, return it.
+        #[arg(long)]
+        if_unique: bool,
     },
     /// Analyze, then pull the source for each candidate cycle and print a verdict.
     Verify {
@@ -211,6 +250,34 @@ fn load_async_dispatch(path: Option<&Path>) -> Result<juc::AsyncConfig> {
     Ok(cfg)
 }
 
+/// Resolve one `FILE:LINE` against a prepared [`Lookup`] and write the result as
+/// `loc<TAB>lock[, lock ...][note]` (or `loc<TAB>(unresolved)`). Shared by
+/// `resolve` and `query` so their output is byte-identical. Malformed locs are
+/// reported to stderr and skipped, never aborting a batch.
+fn resolve_one<W: Write>(
+    lookup: &Lookup,
+    loc: &str,
+    fuzz: u32,
+    method: Option<&str>,
+    if_unique: bool,
+    out: &mut W,
+) -> std::io::Result<()> {
+    let Some((file, line_s)) = loc.rsplit_once(':') else {
+        eprintln!("skip {loc}: expected FILE:LINE");
+        return Ok(());
+    };
+    let Ok(line) = line_s.trim().parse::<i64>() else {
+        eprintln!("skip {loc}: line is not a number");
+        return Ok(());
+    };
+    let r = lookup.resolve(file, line, fuzz, method, if_unique);
+    if r.locks.is_empty() {
+        writeln!(out, "{loc}\t(unresolved)")
+    } else {
+        writeln!(out, "{loc}\t{}{}", r.locks.join(", "), r.note)
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
@@ -219,72 +286,70 @@ fn main() -> Result<()> {
             eprintln!("[lockdex] parsing {} dex file(s) with dexdump...", set.files.len());
             let dex = input::parse_all(&set)?;
             let an = analyze::analyze(&dex, &load_async_dispatch(None)?);
-
-            // The top-level class fixes the source file; strip any nested `$Inner`.
-            fn relpath(class: &str) -> String {
-                let top = class.split('$').next().unwrap_or(class);
-                format!("{}.java", top.replace('.', "/"))
-            }
+            // Same projection `index` persists — so `resolve` and `query` share
+            // one code path and cannot give different answers.
+            let index = ResolveIndex::from_acquisitions(&an.acquisitions);
+            let lookup = index.prepare();
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
             for loc in &locs {
-                let Some((want_file, line_s)) = loc.rsplit_once(':') else {
-                    eprintln!("skip {loc}: expected FILE:LINE");
-                    continue;
-                };
-                let Ok(line) = line_s.trim().parse::<i64>() else {
-                    eprintln!("skip {loc}: line is not a number");
-                    continue;
-                };
-                // Monitor-enters in this file, optionally anchored to a method
-                // (the drift-immune key). File match: full path suffix, or basename.
-                let cands: Vec<&analyze::Acquisition> = an.acquisitions.iter().filter(|a| {
-                    let rp = relpath(&a.class);
-                    let file_ok = if want_file.contains('/') {
-                        want_file.ends_with(&rp)
-                    } else {
-                        rp.rsplit('/').next() == Some(want_file)
-                    };
-                    let method_ok = method.as_deref().is_none_or(|m| a.method.contains(m));
-                    file_ok && method_ok && a.line.is_some()
-                }).collect();
-
-                let mut hits: Vec<String>;
-                let mut note = String::new();
-
-                // 1) exact line.
-                hits = cands.iter().filter(|a| a.line == Some(line as u32)).map(|a| a.lock.clone()).collect();
-
-                // 2) nearest monitor-enter within the fuzz window.
-                if hits.is_empty() && fuzz > 0 {
-                    if let Some((_, nl)) = cands.iter()
-                        .filter_map(|a| a.line.map(|l| ((l as i64 - line).abs(), l)))
-                        .filter(|(d, _)| *d <= fuzz as i64)
-                        .min_by_key(|(d, _)| *d)
-                    {
-                        hits = cands.iter().filter(|a| a.line == Some(nl)).map(|a| a.lock.clone()).collect();
-                        note = format!("  [snapped {:+} line(s) to {nl}]", nl as i64 - line);
+                resolve_one(&lookup, loc, fuzz, method.as_deref(), if_unique, &mut out)?;
+            }
+            out.flush()?;
+        }
+        Cmd::Index { input, out, scope } => {
+            let t0 = std::time::Instant::now();
+            let set = input::resolve(&input, scope.as_deref())?;
+            eprintln!("[lockdex] parsing {} dex file(s) with dexdump (the slow step)...", set.files.len());
+            let dex = input::parse_all(&set)?;
+            let an = analyze::analyze(&dex, &load_async_dispatch(None)?);
+            let index = ResolveIndex::from_acquisitions(&an.acquisitions);
+            let json = serde_json::to_string(&index)?;
+            std::fs::write(&out, &json)
+                .with_context(|| format!("writing index {}", out.display()))?;
+            eprintln!(
+                "[lockdex] indexed {} monitor-enter site(s) to {} ({:.1} MB) in {:.1}s — \
+                 query it with `lockdex query {} FILE:LINE ...` (no re-analysis)",
+                index.sites.len(),
+                out.display(),
+                json.len() as f64 / 1e6,
+                t0.elapsed().as_secs_f64(),
+                out.display(),
+            );
+        }
+        Cmd::Query { index, locs, stdin, fuzz, method, if_unique } => {
+            let t0 = std::time::Instant::now();
+            let raw = std::fs::read_to_string(&index)
+                .with_context(|| format!("reading index {}", index.display()))?;
+            let idx: ResolveIndex = serde_json::from_str(&raw)
+                .with_context(|| format!("parsing index {} — rebuild with `lockdex index`?", index.display()))?;
+            anyhow::ensure!(
+                idx.version == ResolveIndex::VERSION,
+                "index {} is version {} but this lockdex expects {} — rebuild with `lockdex index`",
+                index.display(), idx.version, ResolveIndex::VERSION
+            );
+            let lookup = idx.prepare();
+            eprintln!(
+                "[lockdex] loaded {} site(s) in {:.0}ms — answering queries",
+                idx.sites.len(),
+                t0.elapsed().as_secs_f64() * 1e3
+            );
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            for loc in &locs {
+                resolve_one(&lookup, loc, fuzz, method.as_deref(), if_unique, &mut out)?;
+            }
+            if stdin {
+                use std::io::BufRead;
+                let inp = std::io::stdin();
+                for line in inp.lock().lines() {
+                    let line = line?;
+                    let loc = line.trim();
+                    if loc.is_empty() || loc.starts_with('#') {
+                        continue;
                     }
-                }
-
-                // 3) unambiguous fallback: a single distinct lock in scope.
-                if hits.is_empty() && if_unique {
-                    let mut distinct: Vec<String> = cands.iter().map(|a| a.lock.clone()).collect();
-                    distinct.sort();
-                    distinct.dedup();
-                    if distinct.len() == 1 {
-                        hits = distinct;
-                        note = format!("  [unambiguous: sole lock in {}]",
-                            if method.is_some() { "method" } else { "file" });
-                    }
-                }
-
-                hits.sort();
-                hits.dedup();
-                if hits.is_empty() {
-                    println!("{loc}\t(unresolved)");
-                } else {
-                    println!("{loc}\t{}{note}", hits.join(", "));
+                    resolve_one(&lookup, loc, fuzz, method.as_deref(), if_unique, &mut out)?;
                 }
             }
+            out.flush()?;
         }
         Cmd::Analyze { input, format, out_dir, scope, async_dispatch } => {
             let t0 = std::time::Instant::now();

@@ -465,6 +465,40 @@ lockdex resolve services.jar $(cat sites.txt)
 
 Same build as the trace gives exact hits; a foreign build drifts (use the flags below).
 
+### Index once, query millions of times
+
+`resolve` re-runs the whole pipeline (dexdump + the fixpoint, ~25 s on services.jar)
+every invocation, because it analyzes and answers in one shot. When you have a *lot* of
+sites to resolve — a whole fleet of traces, or the same jar queried over and over — split
+it in two: **build the index once, then query it as many times as you want for
+microseconds each.**
+
+The index is a small JSON projection of just the monitor-enter sites (their file, holder
+method, line, and canonical lock). It carries none of the lock graph and is independent of
+the input jars, so it is safe to cache next to a build or ship alongside a trace bundle.
+
+```sh
+# 1. build the index ONCE — this is the slow step (dexdump + fixpoint).
+lockdex index "$ANDROID_BUILD_TOP/out/soong/system_server_dexjars" -o locks.idx.json
+#   [lockdex] indexed 12843 monitor-enter site(s) to locks.idx.json (3.5 MB) in 24.7s
+
+# 2. query it — loads in ~20 ms, then each answer is microseconds. Same flags as
+#    `resolve` (--fuzz / --method / --if-unique), same output, byte-for-byte.
+lockdex query locks.idx.json ActivityManagerService.java:1701 --fuzz 8
+#   ActivityManagerService.java:1701  com.android.server.am.ActivityManagerService.mProcLock
+
+# 3. for millions of queries, stream them on stdin (one FILE:LINE per line;
+#    blank lines and `#` comments are ignored). One loaded index, buffered output.
+cut -f1 all_contention_sites.tsv | lockdex query locks.idx.json --stdin > answers.tsv
+```
+
+Measured on services.jar: **1,000,000 queries in ~2.2 s** (≈2 µs each) after a 22 ms
+load, in ~11 MB of RAM. `query` and `resolve` share one code path, so an index answer is
+always identical to what `resolve` would have said for the same site on the same build —
+`index` just moves the expensive analysis out of the hot loop. (If the on-disk format ever
+changes, `query` refuses a stale index and tells you to rebuild; regenerate it whenever the
+jars change, since it is a snapshot of that build.)
+
 ### When the line has drifted
 
 The dex's line table must come from the same build as the contention trace. When they
