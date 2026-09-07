@@ -231,11 +231,14 @@ pub struct Lock {
     pub mode: Mode,
 }
 
-/// Maximum access-path length. A finite bound keeps the lock domain finite (so the
-/// analysis terminates on cyclic field chains); longer paths truncate to a distinct
-/// opaque, so they never spuriously merge. Set generously — real `synchronized`
-/// operands are 0-2 hops, so this only ever trims pathological chains.
-pub const MAX_AP: usize = 10;
+/// Maximum access-path length (RacerD-style k=3). This bound is load-bearing for
+/// *performance*, not just termination: as locks flow through calls their access
+/// paths grow by substitution, and the cap is what keeps the interprocedural
+/// fixpoint domain small. Raising it (e.g. to 10) is still sound and terminating
+/// but blows the lock set up geometrically on a large component like system_server.
+/// Longer paths truncate to a distinct opaque, so they never spuriously merge. Real
+/// `synchronized` operands are 0-2 hops, so k=3 costs no real precision.
+pub const MAX_AP: usize = 3;
 
 impl Lock {
     pub fn new(root: Root) -> Self {
