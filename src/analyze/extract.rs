@@ -100,25 +100,25 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                         s.ctor_captures.push((fkey, 0));
                     }
                 }
-                // `this.field = <value>` in ANY method (guarded to `this` so it is
-                // genuinely this object's field):
-                //   - value is a formal        -> field aliases that formal, resolved
-                //                                 interprocedurally (`param_stores`);
-                //   - value is another field / a static (`this.f = svc.getLock()` or
-                //     `this.f = mOther`)        -> field aliases that object directly
-                //                                 (`field_aliases`).
+                // `this.field = <value>` in ANY method (guarded to `this`, so it is
+                // genuinely this object's field). Resolve the value in this method's
+                // own frame: a formal stays symbolic and is resolved interprocedurally
+                // (`param_stores`); everything else is grounded here — `this` becomes
+                // `Recv(class)` (the enclosing instance monitor, exactly as
+                // `synchronized(this)` grounds), a field-of-this / static stays as it
+                // is — and, if it names a concrete object, aliases the field to it.
+                // So `mGlobalLock = ActivityManagerService.this` makes `mGlobalLock`
+                // the same lock as `synchronized(this)`.
                 if regs.get(base).is_some_and(|l| matches!(l.root, Root::This)) {
                     let key = format!("{class}.{field}");
                     if let Some(v) = regs.get(src).cloned() {
-                        match &v.root {
-                            Root::Param(idx) => s.param_stores.push((key, *idx)),
-                            Root::This => s.param_stores.push((key, 0)),
-                            Root::Recv(_) | Root::Static(_)
-                                if !v.fields.is_empty() && v.name() != key =>
-                            {
-                                s.field_aliases.push((key, v));
+                        if let Root::Param(idx) = v.root {
+                            s.param_stores.push((key, idx));
+                        } else {
+                            let g = v.ground(&m.class, &m.key());
+                            if matches!(g.root, Root::Recv(_) | Root::Static(_)) && g.name() != key {
+                                s.field_aliases.push((key, g));
                             }
-                            _ => {}
                         }
                     }
                 }
