@@ -294,12 +294,21 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
                 note(k.clone(), Some(v.clone()), &mut seen);
             }
         }
-        // (b) constructor-parameter assignments, resolved at construction sites
+        // (b) constructor-parameter assignments, resolved at construction sites.
+        // The argument lock lives in the *constructing* method's frame, so a
+        // `this` / `this.field` argument (e.g. AMS passing itself or its own
+        // `mProcLock` into a helper's ctor) is parametric there. Ground it with
+        // the constructing class before filtering so injected `this` collapses to
+        // `Recv(constructingClass)` and `this.field` to `Recv(constructingClass).field`;
+        // otherwise the `Recv`/`Static` filter would drop it and no alias forms.
         for s in by_key.values() {
-            for (_site, ctor_key, args) in &s.alloc_inits {
+            for (site, ctor_key, args) in &s.alloc_inits {
                 let Some(caps) = ctor_captures.get(ctor_key) else { continue };
                 for (key, formal) in caps {
-                    let arg = args.get(*formal as usize).and_then(|o| o.clone());
+                    let arg = args
+                        .get(*formal as usize)
+                        .and_then(|o| o.as_ref())
+                        .map(|l| l.ground(&s.class, site));
                     let v = arg.filter(|v| {
                         matches!(v.root, Root::Recv(_) | Root::Static(_)) && &v.name() != key
                     });
