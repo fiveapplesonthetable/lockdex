@@ -130,6 +130,15 @@ struct Summary {
     /// lock that lives elsewhere (`this.mLock = service.getLock()`), so the two
     /// name one object. Used to collapse a singleton lock split across fields.
     field_aliases: Vec<(String, Lock)>,
+    /// `this.field = formal` in ANY method (declaring-class field key so it
+    /// threads through `super`, formal index with receiver `this` = 0). Makes the
+    /// field an alias of that formal, to be resolved interprocedurally.
+    param_stores: Vec<(String, u32)>,
+    /// resolved actual arguments of every invoke that passes an object:
+    /// (callee key, actuals). Actual index lines up with the callee's formal
+    /// index (receiver at 0), so it binds a call site's args to the callee's
+    /// formals for parameter propagation.
+    arg_bindings: Vec<(String, Vec<Option<Lock>>)>,
 }
 
 pub struct Analysis {
@@ -294,26 +303,15 @@ pub fn analyze(dex: &Dex, cfg: &juc::AsyncConfig) -> Analysis {
                 note(k.clone(), Some(v.clone()), &mut seen);
             }
         }
-        // (b) constructor-parameter assignments, resolved at construction sites.
-        // The argument lock lives in the *constructing* method's frame, so a
-        // `this` / `this.field` argument (e.g. AMS passing itself or its own
-        // `mProcLock` into a helper's ctor) is parametric there. Ground it with
-        // the constructing class before filtering so injected `this` collapses to
-        // `Recv(constructingClass)` and `this.field` to `Recv(constructingClass).field`;
-        // otherwise the `Recv`/`Static` filter would drop it and no alias forms.
-        for s in by_key.values() {
-            for (site, ctor_key, args) in &s.alloc_inits {
-                let Some(caps) = ctor_captures.get(ctor_key) else { continue };
-                for (key, formal) in caps {
-                    let arg = args
-                        .get(*formal as usize)
-                        .and_then(|o| o.as_ref())
-                        .map(|l| l.ground(&s.class, site));
-                    let v = arg.filter(|v| {
-                        matches!(v.root, Root::Recv(_) | Root::Static(_)) && &v.name() != key
-                    });
-                    note(key.clone(), v, &mut seen);
-                }
+        // (b) interprocedural injection: a field stored from a formal
+        // (`this.f = param_i`, in *any* method) aliases the object bound to that
+        // formal. Resolve it by parameter/copy propagation over all call sites
+        // (`Injector`). Constructors, setters and `super(...)` are just call sites,
+        // so ctor/setter/inheritance injection all fall out of one algorithm.
+        {
+            let inj = Injector::build(&by_key);
+            for (field, v) in inj.resolve_all() {
+                note(field, Some(v), &mut seen);
             }
         }
         // (c) singleton self-monitor: a class allocated exactly once and stored in a
@@ -738,6 +736,171 @@ fn canonicalize(lock: &Lock, canon: &HashMap<String, Lock>) -> Lock {
     cur
 }
 
+// ---------------------------------------------------------------------------
+// Interprocedural injection resolution
+// ---------------------------------------------------------------------------
+// Resolve each lock field to the concrete object it names, by parameter/copy
+// propagation over the call graph. `this.f = param_i` (in ANY method) makes the
+// field an alias of formal `i`; a formal is the meet, over every call site that
+// binds it, of the resolved actual argument. This is a monotone dataflow system
+// solved by a worklist to its LEAST fixpoint: cycles converge naturally (a
+// grounded cycle settles on its grounded value, an ungrounded one stays
+// unresolved), and constructors, setters and `super(...)` are all just call
+// sites, so ctor / setter / inheritance injection fall out of one algorithm.
+// Sound: a conflict, or an actual that does not resolve to a single object,
+// yields Top and produces no alias.
+
+// A resolution in the meet-semilattice  Bottom (no info) < Val(x) < Top (conflict).
+#[derive(Clone, PartialEq)]
+enum Res {
+    Bottom,
+    Val(Lock),
+    Top,
+}
+
+impl Res {
+    fn meet(self, other: Res) -> Res {
+        match (self, other) {
+            (Res::Top, _) | (_, Res::Top) => Res::Top,
+            (Res::Bottom, x) | (x, Res::Bottom) => x,
+            (Res::Val(a), Res::Val(b)) => {
+                if a == b { Res::Val(a) } else { Res::Top }
+            }
+        }
+    }
+}
+
+/// A `(method key, formal index)` variable of the analysis (receiver = 0).
+type Formal<'a> = (&'a str, u32);
+
+/// One observed call site of a method: who called it and with what actuals.
+struct CallSite<'a> {
+    class: &'a str,               // caller's class
+    key: &'a str,                 // caller's method key
+    actuals: &'a [Option<Lock>],  // actuals[i] binds the callee's formal i
+}
+
+struct Injector<'a> {
+    sites: HashMap<&'a str, Vec<CallSite<'a>>>,
+    field_stores: HashMap<&'a str, Vec<Formal<'a>>>,
+}
+
+impl<'a> Injector<'a> {
+    fn build(by_key: &'a HashMap<String, Summary>) -> Self {
+        let mut sites: HashMap<&str, Vec<CallSite>> = HashMap::new();
+        let mut field_stores: HashMap<&str, Vec<Formal>> = HashMap::new();
+        for s in by_key.values() {
+            for (callee, actuals) in &s.arg_bindings {
+                sites.entry(callee.as_str()).or_default().push(CallSite {
+                    class: s.class.as_str(),
+                    key: s.key.as_str(),
+                    actuals: actuals.as_slice(),
+                });
+            }
+            for (field, formal) in &s.param_stores {
+                field_stores.entry(field.as_str()).or_default().push((s.key.as_str(), *formal));
+            }
+        }
+        Injector { sites, field_stores }
+    }
+
+    /// The value of one actual argument under the current partial solution `f`.
+    fn eval(&self, actual: Option<&Lock>, cs: &CallSite<'a>, f: &HashMap<Formal<'a>, Res>) -> Res {
+        let Some(l) = actual else { return Res::Top };
+        match &l.root {
+            // the caller's own formal: take its current value, re-appending this
+            // actual's field path (an actual of `param.mLock`).
+            Root::Param(j) => match f.get(&(cs.key, *j)).cloned().unwrap_or(Res::Bottom) {
+                Res::Val(base) => Res::Val(base.append(&l.fields, l.mode)),
+                other => other,
+            },
+            // `this` / a field-of-this / a static: ground in the caller's frame.
+            _ => {
+                let g = ground(l, cs.class, cs.key);
+                match g.root {
+                    Root::Recv(_) | Root::Static(_) => Res::Val(g),
+                    _ => Res::Top,
+                }
+            }
+        }
+    }
+
+    /// Transfer: a formal is the meet of its actuals over all call sites. A method
+    /// with no observed call site is unconstrained -> Top.
+    fn transfer(&self, (m, i): Formal<'a>, f: &HashMap<Formal<'a>, Res>) -> Res {
+        let Some(css) = self.sites.get(m).filter(|v| !v.is_empty()) else {
+            return Res::Top;
+        };
+        let mut acc = Res::Bottom;
+        for cs in css {
+            let a = cs.actuals.get(i as usize).and_then(|o| o.as_ref());
+            acc = acc.meet(self.eval(a, cs, f));
+            if acc == Res::Top {
+                break;
+            }
+        }
+        acc
+    }
+
+    /// Least-fixpoint solve: gather the reachable formals and their dependency
+    /// edges, then run a monotone worklist to convergence.
+    fn solve(&self) -> HashMap<Formal<'a>, Res> {
+        let mut vars: HashSet<Formal> = HashSet::new();
+        let mut rev: HashMap<Formal, Vec<Formal>> = HashMap::new(); // dep -> readers
+        let mut stack: Vec<Formal> = self.field_stores.values().flatten().copied().collect();
+        while let Some((m, i)) = stack.pop() {
+            if !vars.insert((m, i)) {
+                continue;
+            }
+            for cs in self.sites.get(m).into_iter().flatten() {
+                if let Some(Some(a)) = cs.actuals.get(i as usize) {
+                    if let Root::Param(j) = a.root {
+                        rev.entry((cs.key, j)).or_default().push((m, i));
+                        stack.push((cs.key, j));
+                    }
+                }
+            }
+        }
+        let mut f: HashMap<Formal, Res> = vars.iter().map(|&v| (v, Res::Bottom)).collect();
+        let mut wl: Vec<Formal> = vars.into_iter().collect();
+        while let Some(v) = wl.pop() {
+            let nv = self.transfer(v, &f);
+            if f.get(&v) != Some(&nv) {
+                f.insert(v, nv);
+                if let Some(deps) = rev.get(&v) {
+                    wl.extend(deps.iter().copied());
+                }
+            }
+        }
+        f
+    }
+
+    /// Every field that resolves to a single concrete object other than itself.
+    fn resolve_all(&self) -> Vec<(String, Lock)> {
+        let f = self.solve();
+        let mut out = Vec::new();
+        for (field, stores) in &self.field_stores {
+            let mut acc = Res::Bottom;
+            for &(m, i) in stores {
+                // Residual Bottom (ungrounded) is unresolved -> Top.
+                let r = match f.get(&(m, i)) {
+                    Some(Res::Val(v)) => Res::Val(v.clone()),
+                    _ => Res::Top,
+                };
+                acc = acc.meet(r);
+                if acc == Res::Top {
+                    break;
+                }
+            }
+            if let Res::Val(v) = acc {
+                if v.name().as_str() != *field {
+                    out.push(((*field).to_string(), v));
+                }
+            }
+        }
+        out
+    }
+}
 // ---------------------------------------------------------------------------
 // mayAcquire fixpoint
 // ---------------------------------------------------------------------------

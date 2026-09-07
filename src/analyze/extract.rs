@@ -108,6 +108,16 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                         }
                     }
                 }
+                // `this.field = formal` in ANY method: the field aliases that
+                // formal, resolved interprocedurally later. Guarded to `this` so
+                // it is genuinely this object's field.
+                if regs.get(base).is_some_and(|l| matches!(l.root, Root::This)) {
+                    match regs.get(src).map(|l| l.root.clone()) {
+                        Some(Root::Param(idx)) => s.param_stores.push((format!("{class}.{field}"), idx)),
+                        Some(Root::This) => s.param_stores.push((format!("{class}.{field}"), 0)),
+                        _ => {}
+                    }
+                }
                 if let Some(Root::Alloc(site)) = regs.get(src).map(|l| l.root.clone()) {
                     if let Some(ty) = alloc_ty.get(&site) {
                         s.alloc_stores.push((format!("{class}.{field}"), ty.clone()));
@@ -166,6 +176,15 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                             _ => {}
                         }
                     }
+                }
+                // Call-site binding for interprocedural parameter propagation:
+                // record the resolved actuals of any invoke that passes an object
+                // (receiver at index 0, aligning with the callee's formal index).
+                let bound = arg_vals(&regs, inv);
+                if bound.iter().flatten().any(|l| {
+                    matches!(l.root, Root::This | Root::Param(_) | Root::Recv(_) | Root::Static(_))
+                }) {
+                    s.arg_bindings.push((inv.key(), bound));
                 }
                 match juc::classify(&inv.class, &inv.name, cfg) {
                     Some(LockCall::ReadView) => {
