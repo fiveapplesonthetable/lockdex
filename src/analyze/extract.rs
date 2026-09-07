@@ -134,6 +134,20 @@ pub(super) fn extract(m: &Method, value_summaries: &HashMap<String, Lock>, cfg: 
                         events.push((i, Event::Field { key, write: true, line, inst }));
                     }
                 }
+                // Must-alias: once a freshly allocated object is stored into `this.field`,
+                // that register *is* `this.field`. Rename it so a later use of the same
+                // register carries the field identity instead of an opaque allocation.
+                // R8 exploits exactly this — it reuses the allocation register to pass the
+                // object straight into a setter (e.g. `mProcLock = new X(); b.setProcLock(mProcLock)`)
+                // rather than reloading it with an `iget`. Without the rename that argument is
+                // a bare `Alloc`, which the interprocedural resolver cannot ground, so the
+                // lock is left as a standalone `Builder.field`. (Recorded after `alloc_stores`
+                // above, which needs the original allocation identity.)
+                if regs.get(base).is_some_and(|l| matches!(l.root, Root::This))
+                    && regs.get(src).is_some_and(|l| matches!(l.root, Root::Alloc(_)))
+                {
+                    regs.insert(*src, Lock::new(Root::This).append(std::slice::from_ref(field), Mode::Plain));
+                }
             }
             Op::ConstClass { dst, class } => {
                 regs.insert(*dst, Lock::new(Root::ClassConst(class.clone())));
